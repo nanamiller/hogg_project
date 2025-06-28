@@ -33,6 +33,7 @@ def star(kic_id, exptime='long'):
     """
 
     search_result = lk.search_lightcurve(kic_id, mission='Kepler', exptime=exptime)
+
     if len(search_result) < 1:
         print("nana.star(): no results at this cadence")
         return None, None, None, None
@@ -41,15 +42,19 @@ def star(kic_id, exptime='long'):
     lc = lc_collection.stitch()
 
     time, flux = reorder_inputs(lc.time.value, lc.flux.value)
+
     if not np.all(np.diff(time) > 0):
         print("nana.star(): times not in order")
         raise ValueError("Times are not in order")
-
     delta_f = (1/(time[-1] - time[0]))
     sampling_time= np.median(np.diff(time))
+    #print(np.diff(time))
+    #print(np.max(np.diff(time)))
+
+
     if not np.all(np.diff(time) > 0.90 * sampling_time): #magic
         print("nana.star(): some time intervals out of spec")
-        raise ValueError("some time intervals out of spec")
+        #raise ValueError("some time intervals out of spec")
     
     exptime = None
     if sampling_time > 0.9 * lc_exptime: 
