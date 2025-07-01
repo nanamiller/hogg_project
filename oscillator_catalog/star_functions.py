@@ -440,7 +440,7 @@ def check_coherence(ts, ys, weights, final_freq, T):
     `ts`: numpy array of time values  
     `ys`: numpy array of signal values (flux)  
     `weights`: numpy array of weights  
-    `final_freq`: numpy array of refined frequencies  
+    `final_freq`: numpy array of refined frequencies 
     `T`: exposure time 
 
     ## Outputs:
