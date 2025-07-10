@@ -652,5 +652,111 @@ def pg_mini(f_min, f_max, lc):
     freq_mini = pg_mini.frequency.to(1 / u.day).value
     return freq_mini, power_mini
 
+def splitting(ts, K, jackknife = True):
+    '''
+    # splitting()
+    Produce either disjoint or jackknife subsamples.
+    
+    ## Inputs:
+    - `ts`: shape `(N, )` array of times (not necesarily ordered)
+    - `K`: number of subsamples to return
+    - `jackknife`: `True` for jackknife subsamples; otherwise disjoint
+    
+    ## Output: 
+    - `masks`: shape `(K, N)` boolean array; `True` if in subsample
+
+    ## Comment:
+    - Relies on numpy conventions about relationships between integers and bools.
+    '''
+    N = len(ts)
+    indices = np.argsort(ts)
+    split_indices = np.array_split(indices, K)
+    if jackknife:
+        masks = np.ones((K, N), dtype=bool) # make everything True by default
+        for i, idx in enumerate(split_indices):
+            masks[i, idx] = False # remove subsample
+    else:
+        masks = np.zeros((K, N), dtype=bool) # make everything False by default
+        for i, idx in enumerate(split_indices):
+            masks[i, idx] = True # add subsample
+    return masks
+
+###FINAL COHERENCE TEST!!!!
+def coherence_all(ts, ys, weights, final_freq, T):
+    oms = np.array([f * 2 * np.pi for f in final_freq])
+    all = np.zeros((len(oms), 2))
+
+    for idx, om in enumerate(oms):
+        A = integral_design_matrix(ts, om, T)
+        pars, _ = weighted_least_squares_new(A, ys, weights)
+        all[idx][0] = pars[1]
+        all[idx][1] = pars[2]
+        
+
+    splits = np.array([2, 4, 8])
+    results = [np.zeros((len(oms), n, 2)) for n in splits]
+    
+    for split, result in zip(splits, results):     
+
+        jack = (split == 8)
+        masks = splitting(ts, split, jackknife = jack)
+        for idx, om in enumerate(oms):
+            for i, mask in enumerate(masks):
+                A = integral_design_matrix(ts[mask], om, T)
+                pars, _ = weighted_least_squares_new(A, ys[mask], weights[mask])
+                result[idx][i][0] = pars[1] #a
+                result[idx][i][1] = pars[2] #b
+
+    return all, results[0], results[1], results[2] #all, half, quarter, eighth (+jacknives)
+
+
+def sampling_stats(alls, quartiles, eighths):
+
+    f_num = len(alls)
+    
+    amp_change = np.zeros((f_num, 4))
+    phase_change = np.zeros((f_num, 4))
+
+    sigma_lnA = np.zeros(f_num)
+    sigma_phi4 = np.zeros(f_num)
+    sigma_phij = np.zeros(f_num)
+    
+    for inx, (all, quartile, eighth) in enumerate(zip(alls, quartiles, eighths)):
+
+        deltak_4 = np.zeros((4,2))
+        deltak_j = np.zeros((8,2))
+        a,b = all[0], all[1]
+    
+        for i, q in enumerate(quartile):   
+            deltak_4[i] = [a - q[0], b - q[1]]
+
+        for i, j in enumerate(eighth):   
+            deltak_j[i] = [a - j[0], b - j[1]]
+                
+        x = np.array([a,b])
+        x_norm = np.linalg.norm([a, b])
+        x_hat = x / x_norm
+        y_hat = [x_hat[1], - x_hat[0]]
+
+        amp = np.dot(deltak_4, x_hat)/ x_norm
+        phase4 = np.dot(deltak_4, y_hat)/x_norm
+        phasej = np.dot(deltak_j, y_hat)/x_norm
+
+        var_lnA = 0.5 * np.sqrt(np.mean(amp ** 2))#1/2 rms lnA
+        varphi4 = 0.5 * np.sqrt(np.mean(phase4 ** 2)) #1/2 rms phase
+
+        varphij = np.sqrt((7/8) * np.sum(phasej ** 2)) #sigma phi
+
+        amp_change[inx] = amp
+        phase_change[inx] = phase4
+
+        sigma_lnA[inx] = var_lnA
+        sigma_phi4[inx] = varphi4
+        sigma_phij[inx] = varphij 
+        
+        
+
+    return amp_change, phase_change, sigma_lnA, sigma_phi4, sigma_phij
+
 
 
