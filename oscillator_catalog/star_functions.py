@@ -624,11 +624,13 @@ def pg_full(f_min, f_max, lc):
     freq_full = pg_full.frequency.to(1 / u.day).value
     return freq_full, power_full
 
-def pg_mini(f_min, f_max, lc):
+def pg_mini(f_min, f_max, df, lc):
     """
+   
     ## Inputs:
-    `f_min`: minimum frequency (float, 1/day) — sets frequency resolution  
+    `f_min`: minimum frequency (float, 1/day)
     `f_max`: maximum frequency (float, 1/day)  
+     #df is frequency spacing
     `lc`: Lightkurve LightCurve object
 
     ## Outputs:
@@ -642,14 +644,14 @@ def pg_mini(f_min, f_max, lc):
     - Assumes `lc.to_periodogram()` succeeds without errors
     """
 
-    frequency_grid_mini = np.arange(f_min, f_max / 3, f_min) / u.day
-    pg_mini = lc.to_periodogram(
+    frequency_grid_mini = np.arange(f_min, f_max / 3, df) / u.day
+    pg = lc.to_periodogram(
         method='lombscargle',
         normalization='psd',
         frequency=frequency_grid_mini
     )
-    power_mini = pg_mini.power.value
-    freq_mini = pg_mini.frequency.to(1 / u.day).value
+    power_mini = pg.power.value
+    freq_mini = pg.frequency.to(1 / u.day).value
     return freq_mini, power_mini
 
 def splitting(ts, K, jackknife = True):
