@@ -596,7 +596,7 @@ def mask_vals(lc):
 
     return t_fit, flux_fit, weight_fit
 
-def pg_full(f_min, f_max, lc):
+def pg_full(f_min, f_max, df, lc):
     """
     ## Inputs:
     `f_min`: minimum frequency (float, 1/day) — sets frequency resolution  
@@ -614,14 +614,14 @@ def pg_full(f_min, f_max, lc):
     - Assumes `lc.to_periodogram()` succeeds without errors
     """
 
-    frequency_grid_full = np.arange(f_min, f_max, f_min) / u.day
-    pg_full = lc.to_periodogram(
+    frequency_grid_full = np.arange(f_min, f_max, df) / u.day
+    pg = lc.to_periodogram(
         method='lombscargle',
         normalization='psd',
         frequency=frequency_grid_full
     )
-    power_full = pg_full.power.value
-    freq_full = pg_full.frequency.to(1 / u.day).value
+    power_full = pg.power.value
+    freq_full = pg.frequency.to(1 / u.day).value
     return freq_full, power_full
 
 def pg_mini(f_min, f_max, df, lc):
