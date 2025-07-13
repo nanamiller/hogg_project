@@ -31,16 +31,17 @@ def star(kic_id, exptime='long'):
     - No handling of NaNs, gaps, or outliers in flux or time
     - Assumes time sampling regularity based on hardcoded magic thresholds
     """
-
-    search_result = lk.search_lightcurve(kic_id, mission='Kepler', exptime=exptime)
+     
+    search_result = lk.search_lightcurve(kic_id, mission = 'Kepler', exptime=exptime)
+    
 
     if len(search_result) < 1:
-        print("nana.star(): no results at this cadence")
+        print(f"nana.star(): no results for {kic_id} at this cadence")
         return None, None, None, None
 
+    
     lc_collection = search_result.download_all()
     lc = lc_collection.stitch()
-
     time, flux = reorder_inputs(lc.time.value, lc.flux.value)
 
     if not np.all(np.diff(time) > 0):
@@ -48,13 +49,13 @@ def star(kic_id, exptime='long'):
         raise ValueError("Times are not in order")
     delta_f = (1/(time[-1] - time[0]))
     sampling_time= np.median(np.diff(time))
-    #print(np.diff(time))
-    #print(np.max(np.diff(time)))
+    
 
 
     if not np.all(np.diff(time) > 0.90 * sampling_time): #magic
         print("nana.star(): some time intervals out of spec")
-        #raise ValueError("some time intervals out of spec")
+        print("nana.star(): median dt = ", sampling_time)
+        raise ValueError("some time intervals out of spec")
     
     exptime = None
     if sampling_time > 0.9 * lc_exptime: 
@@ -233,7 +234,7 @@ def folding_freq(delta_f, fs, ps, sampling_time, makeplots=False):
         plt.plot(fc_candidates, foos_c)
         plt.axvline(fc_guess)
         plt.axvline(fc, color='red', alpha=0.5)
-        plt.title(f"Refined fc: {fc}")
+        plt.title(f"Refined folding frequency: {fc:0.5f}")
         plt.show()
 
     return fc
@@ -287,6 +288,9 @@ def get_filtered_peaks(num_of_peaks, xs, ys):
     
     indices = indxs[np.argsort(-ys[indxs])]
 
+    if (len(indices) < num_of_peaks):
+        print(f"get_filtered_peaks(): fewer than {num_of_peaks} peaks found, will return None for missing peaks")
+
     filtered = []
     for index in indices:
         if all(abs(xs[index] - xs[i]) >= f_avoid for i in filtered):
@@ -294,6 +298,8 @@ def get_filtered_peaks(num_of_peaks, xs, ys):
             if len(filtered) >= num_of_peaks:
                 break
 
+    while len(filtered) < num_of_peaks:
+        filtered.append(None)
     return np.array(filtered)
 
 
@@ -613,16 +619,19 @@ def pg_full(f_min, f_max, df, lc):
     - No check for empty frequency grid if range is too small
     - Assumes `lc.to_periodogram()` succeeds without errors
     """
-
-    frequency_grid_full = np.arange(f_min, f_max, df) / u.day
-    pg = lc.to_periodogram(
-        method='lombscargle',
-        normalization='psd',
-        frequency=frequency_grid_full
-    )
-    power_full = pg.power.value
-    freq_full = pg.frequency.to(1 / u.day).value
-    return freq_full, power_full
+    try:
+        frequency_grid_full = np.arange(f_min, f_max, df) / u.day
+        pg = lc.to_periodogram(
+            method='lombscargle',
+            normalization='psd',
+            frequency=frequency_grid_full
+        )
+        power_full = pg.power.value
+        freq_full = pg.frequency.to(1 / u.day).value
+        return freq_full, power_full
+    except Exception as e:
+        print(f"pg_full(): Error during periodogram calculation: {e}")
+        return None, None
 
 def pg_mini(f_min, f_max, df, lc):
     """
@@ -643,16 +652,19 @@ def pg_mini(f_min, f_max, df, lc):
     - No check for empty frequency grid if range is too small
     - Assumes `lc.to_periodogram()` succeeds without errors
     """
-
-    frequency_grid_mini = np.arange(f_min, f_max / 3, df) / u.day
-    pg = lc.to_periodogram(
-        method='lombscargle',
-        normalization='psd',
-        frequency=frequency_grid_mini
-    )
-    power_mini = pg.power.value
-    freq_mini = pg.frequency.to(1 / u.day).value
-    return freq_mini, power_mini
+    try:
+        frequency_grid_mini = np.arange(f_min, f_max / 3, df) / u.day
+        pg = lc.to_periodogram(
+            method='lombscargle',
+            normalization='psd',
+            frequency=frequency_grid_mini
+        )
+        power_mini = pg.power.value
+        freq_mini = pg.frequency.to(1 / u.day).value
+        return freq_mini, power_mini
+    except Exception as e:
+        print(f"pg_mini(): Error during periodogram calculation: {e}")
+        return None, None
 
 def splitting(ts, K, jackknife = True):
     '''
