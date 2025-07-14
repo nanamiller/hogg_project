@@ -10,6 +10,7 @@ from datetime import datetime
 import os
 from astropy.table import Table
 from astropy.io import ascii
+from lightkurve import LightCurve
 
 
 f_avoid = 3.5 / 372.5
@@ -331,6 +332,20 @@ def get_filtered_peaks(num_of_peaks, xs, ys):
     while len(filtered) < num_of_peaks:
         filtered.append(None)
     return np.array(filtered)
+
+def injection_design_matrix(ts, freq):
+    om = 2 * np.pi * freq
+    return np.vstack([ np.ones_like(ts), np.sin(om * ts), np.cos(om * ts) ]).T
+
+def inject_one_mode(ts, ys, T, in_pars):
+    #yin is the new fluxfit
+    fin, ain, bin = in_pars
+    inject_vec = np.array([0.0, ain, bin])   
+
+    xin = integral_design_matrix(ts, 2 * np.pi * fin, T)
+    yin = ys + xin @ inject_vec  
+    
+    return yin 
 
 
 def integral_design_matrix(ts, om, T):
@@ -832,18 +847,30 @@ def sampling_stats(alls, quartiles, eighths):
 
     return amp_change, phase_change, sigma_lnA, sigma_phi4, sigma_phij
 
-def star_search(kicID, plots = False, save = False):
+def star_search(kicID, plots = False, save = False, inject_rng = None, inject_amp = 0.01, max_peaks = 24):
     
     kicID = "KIC" + str(kicID).lstrip("0")
     
+
     lc, delta_f, sampling_time, exptime = star(kicID)
+
     df, f_max, f_min = delta_f/3, (3 / (2*sampling_time)), 0.5 # magic number
     t_fit, flux_fit, weight_fit = mask_vals(lc)
+    
+    inject = False
+    if inject_rng is not None:
+        inject = True
+        ain,bin = inject_amp * inject_rng.normal(size = 2)
+        fin = inject_rng.uniform(f_min, f_max)
+        inject_pars = (fin, ain, bin)
+        print("injection", inject_pars)
+        flux_fit = inject_one_mode(t_fit, flux_fit, exptime, inject_pars)
+        lc = LightCurve(time=t_fit, flux=flux_fit) #setting new lc to match yin
 
     freq_full, power_full = pg_full(f_min, f_max, df, lc)
     freq_mini, power_mini = pg_mini(f_min, f_max, df, lc)
 
-    indices = get_filtered_peaks(12, freq_mini, power_mini)
+    indices = get_filtered_peaks(max_peaks, freq_mini, power_mini)
     refined_freq, refined_power, second_derivatives = refine_peaks(freq_mini, power_mini, indices)
     fc = folding_freq(delta_f, freq_full, power_full, sampling_time, False)
     regions, final_freqs, chi2s = region_and_freq(indices, fc, df, freq_mini, power_mini, t_fit, flux_fit, weight_fit, exptime)
@@ -860,6 +887,7 @@ def star_search(kicID, plots = False, save = False):
         date_str = datetime.now().strftime("%Y-%m-%d") 
         output_dir = os.path.join("star_outputs", f"{date_str}_{kicID}")
         os.makedirs(output_dir, exist_ok=True)
+
         
         data = Table()
     
@@ -875,67 +903,148 @@ def star_search(kicID, plots = False, save = False):
         data['Sigma phi(4)'] = safe_arr(sigma_phi4)
         data['Sigma phi(jack)'] = safe_arr(sigma_phij)
         
-        
-        ascii.write(
-        data,
-        kicID + '_stats' + '.csv',
-        overwrite=True,
-        format="csv",
-        formats={
-            "Modes": "{:.7f}",
-            "Mode in region A": "{:.7f}",
-            "Sharp": "{:.7e}",
-            "Delta chi2": "{:.7e}",
-            "Change of phase(2)": "{:.7e}",
-            "Change of lnA(2)": "{:.7e}",
-            "Sigma lnA(4)": "{:.7e}",
-            "Sigma phi(4)": "{:.7e}",
-            "Sigma phi(jack)" : "{:.7e}"
-        }
-        )
+        if inject:
+            ascii.write(
+            data,
+            kicID + '_injected_stats' + '.csv',
+            overwrite=True,
+            format="csv",
+            formats={
+                "Modes": "{:.7f}",
+                "Mode in region A": "{:.7f}",
+                "Sharp": "{:.7e}",
+                "Delta chi2": "{:.7e}",
+                "Change of phase(2)": "{:.7e}",
+                "Change of lnA(2)": "{:.7e}",
+                "Sigma lnA(4)": "{:.7e}",
+                "Sigma phi(4)": "{:.7e}",
+                "Sigma phi(jack)" : "{:.7e}"
+            }
+            )
+        else:
+            ascii.write(
+            data,
+            kicID + '_stats' + '.csv',
+            overwrite=True,
+            format="csv",
+            formats={
+                "Modes": "{:.7f}",
+                "Regions": "{}",
+                "Mode in region A": "{:.7f}",
+                "Sharp": "{:.7e}",
+                "Delta chi2": "{:.7e}",
+                "Change of phase(2)": "{:.7e}",
+                "Change of lnA(2)": "{:.7e}",
+                "Sigma lnA(4)": "{:.7e}",
+                "Sigma phi(4)": "{:.7e}",
+                "Sigma phi(jack)" : "{:.7e}"
+            }
+            )
+
+
 
     if plots:
         #plot lightcurve
-        plt.plot(lc.time.value, lc.flux.value, color = "k")
-        plt.xlabel("Time")
-        plt.ylabel("Flux")
-        plt.title(f"Lightcurve of {kicID}")
-        plt.show()
-        if save:
-            plt.savefig(os.path.join(output_dir, f"{kicID}_lightcurve.png"))
+        if inject:
+            plt.plot(lc.time.value, lc.flux.value, color = "k", label = "Injected Lightcurve")
+            plt.xlabel("Time")
+            plt.ylabel("Flux")
+            plt.title(f"Lightcurve of {kicID}")
+            plt.show()
+            if save:
+                plt.savefig(os.path.join(output_dir, f"{kicID}_injected_lightcurve.png"))
+        else:
+            plt.plot(lc.time.value, lc.flux.value, color = "k", label = "Lightcurve")
+            plt.xlabel("Time")
+            plt.ylabel("Flux")
+            plt.title(f"Lightcurve of {kicID}")
+            plt.show()
+            if save:
+                plt.savefig(os.path.join(output_dir, f"{kicID}_lightcurve.png"))
 
 
-        plt.plot(freq_full, power_full, 'k.')
-        valid_points = [(f, p) for f, p in zip(final_freqs, refined_power) if f is not None and p is not None]
-        if valid_points:
-            valid_freqs, valid_power = zip(*valid_points)
-            plt.scatter(valid_freqs, valid_power, color='red', marker='o')
-        plt.scatter(final_freqs, refined_power, color = 'red', marker = 'o')
-        plt.xlabel("Frequency (1/day)")
-        plt.ylabel("Power")
-        plt.axvline(fc)
-        plt.axvline(fc/2)
-        plt.title(f"Full Periodogram of {kicID}")
-        plt.show()
-        if save:
-            plt.savefig(os.path.join(output_dir, f"{kicID}_fullperio.png"))
+        if inject:
+            plt.plot(freq_full, power_full, 'k.')
+            valid_points = [(f, p) for f, p in zip(final_freqs, refined_power) if f is not None and p is not None]
+            if valid_points:
+                valid_freqs, valid_power = zip(*valid_points)
+                plt.scatter(valid_freqs, valid_power, color='red', marker='o')
+            plt.scatter(final_freqs, refined_power, color = 'red', marker = 'o')
+            plt.xlabel("Frequency (1/day)")
+            plt.ylabel("Power")
+            plt.axvline(fc)
+            plt.axvline(fc/2)
+            plt.title(f"Full Injected Periodogram of {kicID}")
+            plt.show()
+            if save:
+                plt.savefig(os.path.join(output_dir, f"{kicID}_injected_fullperio.png"))
 
-        plt.plot(freq_mini, power_mini, 'k.')
-        plt.xlabel("Frequency (1/day)")
-        plt.ylabel("Power")
-        plt.title(f"Region A Periodogram of {kicID}")
-        plt.show()
-        if save:
-            plt.savefig(os.path.join(output_dir, f"{kicID}_miniperio.png"))
+        else:
+            plt.plot(freq_full, power_full, 'k.')
+            valid_points = [(f, p) for f, p in zip(final_freqs, refined_power) if f is not None and p is not None]
+            if valid_points:
+                valid_freqs, valid_power = zip(*valid_points)
+                plt.scatter(valid_freqs, valid_power, color='red', marker='o')
+            plt.scatter(final_freqs, refined_power, color = 'red', marker = 'o')
+            plt.xlabel("Frequency (1/day)")
+            plt.ylabel("Power")
+            plt.axvline(fc)
+            plt.axvline(fc/2)
+            plt.title(f"Full Periodogram of {kicID}")
+            plt.show()
+            if save:
+                plt.savefig(os.path.join(output_dir, f"{kicID}_fullperio.png"))
 
-        plt.plot(freq_mini, power_mini, 'k-')
-        plt.xlabel("Frequency (1/day)")
-        plt.ylabel("Log Power")
-        plt.semilogy()
-        plt.title(f"Region A Log Periodogram of {kicID}")
-        plt.show()
-        if save:
-            plt.savefig(os.path.join(output_dir, f"{kicID}_mini_logperio.png"))
+        if inject:
+            plt.plot(freq_mini, power_mini, 'k.')
+            valid_points = [(f, p) for f, p in zip(final_freqs, refined_power) if f is not None and p is not None]
+            if valid_points:
+                valid_freqs, valid_power = zip(*valid_points)
+                plt.scatter(valid_freqs, valid_power, color='red', marker='o')
+            plt.scatter(final_freqs, refined_power, color = 'red', marker = 'o')
+            plt.xlabel("Frequency (1/day)")
+            plt.ylabel("Power")
+            plt.axvline(fc)
+            plt.axvline(fc/2)
+            plt.title(f"Region A Injected Periodogram of {kicID}")
+            plt.show()
+            if save:
+                plt.savefig(os.path.join(output_dir, f"{kicID}_injected_miniperio.png"))
+        else:
+            plt.plot(freq_mini, power_mini, 'k.')
+            valid_points = [(f, p) for f, p in zip(final_freqs, refined_power) if f is not None and p is not None]
+            if valid_points:
+                valid_freqs, valid_power = zip(*valid_points)
+                plt.scatter(valid_freqs, valid_power, color='red', marker='o')
+            plt.scatter(final_freqs, refined_power, color = 'red', marker = 'o')
+            plt.xlabel("Frequency (1/day)")
+            plt.ylabel("Power")
+            plt.axvline(fc)
+            plt.axvline(fc/2)
+            plt.title(f"Region A  Periodogram of {kicID}")
+            plt.show()
+            if save:
+                plt.savefig(os.path.join(output_dir, f"{kicID}_miniperio.png"))
+        
+        if inject:
+            plt.plot(freq_mini, power_mini, 'k-')
+            plt.xlabel("Frequency (1/day)")
+            plt.ylabel("Log Power")
+            plt.semilogy()
+            plt.title(f"Region A Log Injected Periodogram of {kicID}")
+            plt.show()
+            if save:
+                plt.savefig(os.path.join(output_dir, f"{kicID}_injected_mini_logperio.png"))
+        else:
+
+            plt.plot(freq_mini, power_mini, 'k-')
+            plt.xlabel("Frequency (1/day)")
+            plt.ylabel("Log Power")
+            plt.semilogy()
+            plt.title(f"Region A Log Periodogram of {kicID}")
+            plt.show()
+            if save:
+                plt.savefig(os.path.join(output_dir, f"{kicID}_mini_logperio.png"))
         
         #fc = folding_freq(delta_f, freq_full, power_full, sampling_time, True)
 
@@ -995,8 +1104,13 @@ def star_search(kicID, plots = False, save = False):
 
         
         plt.tight_layout()
-        if save:
-            plt.savefig(os.path.join(output_dir, f"{kicID}_15point.png"))
+        if inject:
+            if save:
+                plt.savefig(os.path.join(output_dir, f"{kicID}_injected_15point.png"))
+        else:
+            if save:
+                plt.savefig(os.path.join(output_dir, f"{kicID}_15point.png"))
+
 
 
 
