@@ -6,6 +6,11 @@ from scipy.signal import find_peaks
 import scipy.signal
 from astropy import units as u
 from scipy.interpolate import CubicSpline
+from datetime import datetime
+import os
+from astropy.table import Table
+from astropy.io import ascii
+
 
 f_avoid = 3.5 / 372.5
 lc_exptime = (29.4) / (60 * 24) #days, see Kepler Data Processing Handbook, Section 3.1
@@ -188,11 +193,36 @@ def refine_peaks(xs, ys, indices):
     - Assumes all `indices` are valid (i.e., between 1 and len(xs) - 2)
     - Assumes `xs` and `ys` are numpy arrays and ordered
     """
+    #results = list(map(check_refine, indices))
+    # xs_refined, ys_refined, second_derivatives = zip(
+    #     *[(r if r is not None else (None, None, None)) for r in results]
+    # )
 
-    foo = lambda i: refine_peak(xs, ys, i)
-    xs_refined, ys_refined, second_derivatives = zip(*map(foo, indices))
+    #foo = lambda i: refine_peak(xs, ys, i)
+    #xs_refined, ys_refined, second_derivatives = zip(*map(foo, indices))
+
+    n = len(indices)
+    xs_refined = np.full(n, None)
+    ys_refined = np.full(n, None)
+    second_derivatives = np.full(n, None)
+
+    for j, i in enumerate(indices):
+        result = check_refine(xs, ys, i)
+        if result is not None:
+            x_r, y_r, q_r = result
+            xs_refined[j] = x_r
+            ys_refined[j] = y_r
+            second_derivatives[j] = q_r
+
     return np.array(xs_refined), np.array(ys_refined), np.array(second_derivatives)
 
+def check_refine(xs, ys, i):
+        if i is None:
+            return None
+        try:
+            return refine_peak(xs, ys, i)
+        except Exception:
+            return None
 
 
 def folding_freq(delta_f, fs, ps, sampling_time, makeplots=False):
@@ -386,7 +416,7 @@ def region_and_freq(indices, folding_freq, f_min, unrefined_freq, unrefined_powe
     ## Inputs:
     `indices`: array of peak indices
     `folding_freq`: folding frequency   
-    `f_min`: frequency resolution
+    `df`: frequency resolution
     `unrefined_freq`: array of frequency values  
     `unrefined_power`: power spectrum values corresponding to `unrefined_freq`  
     `t_fit`: time values used for model fitting  
@@ -404,16 +434,21 @@ def region_and_freq(indices, folding_freq, f_min, unrefined_freq, unrefined_powe
     - Assumes `refine_peaks` succeeds for all given indices
     - No handling if `fine_freqsX` are empty or out of bounds
     """
-
+    valid_locs = [j for j, val in enumerate(indices) if val is not None]
+    valid_indices = [indices[j] for j in valid_locs]
+    
     N = len(indices)
-    regions = np.empty(N, dtype=object)
-    best_freqs = np.zeros(N)
-    best_chi2s = np.zeros(N)
+    regions = np.full(N, None)
+    best_freqs = np.full(N, None)
+    best_chi2s = np.full(N, None)
 
-    fas, _, _ = refine_peaks(unrefined_freq, unrefined_power, indices)
+    fas, _, _ = refine_peaks(unrefined_freq, unrefined_power, valid_indices)
+    
     A, B, C = fas, folding_freq - fas, folding_freq + fas
 
-    for i in range(N):
+    
+
+    for i, loc in enumerate(valid_locs):
         fine_freqsA = np.arange(A[i] - 5 * f_min, A[i] + 5 * f_min, 0.2 * f_min)
         chi2_fineA = np.array([integral_chi_squared(2 * np.pi * f, t_fit, flux_fit, weight_fit, T) for f in fine_freqsA])
         best_freqA, best_chi2A = find_min_and_refine(fine_freqsA, chi2_fineA)
@@ -427,18 +462,20 @@ def region_and_freq(indices, folding_freq, f_min, unrefined_freq, unrefined_powe
         best_freqC, best_chi2C = find_min_and_refine(fine_freqsC, chi2_fineC)
 
         if best_chi2A <= best_chi2B and best_chi2A <= best_chi2C:
-            regions[i] = "A"
-            best_freqs[i] = best_freqA
-            best_chi2s[i] = best_chi2A
+            regions[loc] = "A"
+            best_freqs[loc] = best_freqA
+            best_chi2s[loc] = best_chi2A
         elif best_chi2B < best_chi2A and best_chi2B < best_chi2C:
-            regions[i] = "B"
-            best_freqs[i] = best_freqB
-            best_chi2s[i] = best_chi2B
+            regions[loc] = "B"
+            best_freqs[loc] = best_freqB
+            best_chi2s[loc] = best_chi2B
         else:
-            regions[i] = "C"
-            best_freqs[i] = best_freqC
-            best_chi2s[i] = best_chi2C
+            regions[loc] = "C"
+            best_freqs[loc] = best_freqC
+            best_chi2s[loc] = best_chi2C
+
     return regions, best_freqs, best_chi2s
+
 
 def check_coherence(ts, ys, weights, final_freq, T):
     """
@@ -462,14 +499,19 @@ def check_coherence(ts, ys, weights, final_freq, T):
     - Assumes data can be cleanly split at the median time
     """
     N = len(final_freq)
-    oms = 2 * np.pi * final_freq
-    a_early, a_late, b_early, b_late = (np.zeros(N) for _ in range(4))
+    a_early, a_late, b_early, b_late = (np.full(N, None) for _ in range(4))
 
     ts_median = np.median(ts)
     I_early = ts < ts_median
     I_late  = ts > ts_median
 
-    for inx, om in enumerate(oms):
+    for inx, f in enumerate(final_freq):
+
+        if f is None:
+            continue
+        
+        om = 2 * np.pi * f
+
         A_early = integral_design_matrix(ts[I_early], om, T)
         pars_early, _ = weighted_least_squares_new(A_early, ys[I_early], weights[I_early])
         a_early[inx] = pars_early[1]
@@ -481,6 +523,9 @@ def check_coherence(ts, ys, weights, final_freq, T):
         b_late[inx] = pars_late[2]
 
     return a_early, a_late, b_early, b_late
+
+def safe_arr(arr):
+    return [np.nan if v is None else v for v in arr]
 
 def change_in_phase_and_amp(a_early, a_late, b_early, b_late, ts):
     """
@@ -498,13 +543,15 @@ def change_in_phase_and_amp(a_early, a_late, b_early, b_late, ts):
     - Assumes clean median split in time
     """
     N = len(a_early)
-    rates_of_phases = np.zeros(N)
-    rates_of_amps = np.zeros(N)
+    rates_of_phases = np.full(N, None)
+    rates_of_amps = np.full(N, None)
 
     ts_median = np.median(ts)
     delta_t = np.median(ts[ts > ts_median]) - np.median(ts[ts < ts_median])
 
     for i in range(N):
+        if a_early[i] is None or a_late[i] is None or b_early[i] is None or b_late[i] is None:
+            continue
         a_earl_grey = a_early[i]
         a_latte     = a_late[i]
         b_earl_grey = b_early[i]
@@ -538,12 +585,15 @@ def sharpness(second_derivatives, y_news):
     - Assumes `y_news` and `second_derivatives` are same-length NumPy arrays
     - Assumes `y_news` ≠ 0 and `second_derivatives` < 0 (for real output)
     """
+
     second_derivatives = np.asarray(second_derivatives)
     y_news = np.asarray(y_news)
     N = len(second_derivatives)
 
-    sharps = np.zeros(N)
+    sharps = np.full(N, None)
     for i in range(N):
+        if second_derivatives[i] is None or y_news[i] is None:
+            continue
         sharps[i] = (-second_derivatives[i] / y_news[i]) ** 0.5
 
     return sharps
@@ -697,24 +747,32 @@ def splitting(ts, K, jackknife = True):
 
 ###FINAL COHERENCE TEST!!!!
 def coherence_all(ts, ys, weights, final_freq, T):
-    oms = np.array([f * 2 * np.pi for f in final_freq])
-    all = np.zeros((len(oms), 2))
 
-    for idx, om in enumerate(oms):
+    N = len(final_freq)
+    #oms = np.array([f * 2 * np.pi for f in final_freq])
+    all = np.full((N, 2), None)
+        
+
+    splits = np.array([2, 4, 8])
+    results = [np.full((N, n, 2), None) for n in splits]
+    
+    for idx, f in enumerate(final_freq):
+        if f is None:
+            continue
+        om = f * 2 * np.pi 
         A = integral_design_matrix(ts, om, T)
         pars, _ = weighted_least_squares_new(A, ys, weights)
         all[idx][0] = pars[1]
         all[idx][1] = pars[2]
-        
 
-    splits = np.array([2, 4, 8])
-    results = [np.zeros((len(oms), n, 2)) for n in splits]
-    
     for split, result in zip(splits, results):     
 
         jack = (split == 8)
         masks = splitting(ts, split, jackknife = jack)
-        for idx, om in enumerate(oms):
+        for idx, f in enumerate(final_freq):
+            if f is None:
+                continue
+            om = f * 2 * np.pi
             for i, mask in enumerate(masks):
                 A = integral_design_matrix(ts[mask], om, T)
                 pars, _ = weighted_least_squares_new(A, ys[mask], weights[mask])
@@ -728,18 +786,20 @@ def sampling_stats(alls, quartiles, eighths):
 
     f_num = len(alls)
     
-    amp_change = np.zeros((f_num, 4))
-    phase_change = np.zeros((f_num, 4))
+    amp_change = np.full((f_num, 4), None)
+    phase_change = np.full((f_num, 4), None)
 
-    sigma_lnA = np.zeros(f_num)
-    sigma_phi4 = np.zeros(f_num)
-    sigma_phij = np.zeros(f_num)
+    sigma_lnA = np.full(f_num, None)
+    sigma_phi4 = np.full(f_num, None)
+    sigma_phij = np.full(f_num, None)
     
     for inx, (all, quartile, eighth) in enumerate(zip(alls, quartiles, eighths)):
 
         deltak_4 = np.zeros((4,2))
         deltak_j = np.zeros((8,2))
         a,b = all[0], all[1]
+        if a is None or b is None:
+            continue
     
         for i, q in enumerate(quartile):   
             deltak_4[i] = [a - q[0], b - q[1]]
@@ -771,6 +831,172 @@ def sampling_stats(alls, quartiles, eighths):
         
 
     return amp_change, phase_change, sigma_lnA, sigma_phi4, sigma_phij
+
+def star_search(kicID, plots = False, save = False):
+    
+    kicID = "KIC" + str(kicID).lstrip("0")
+    
+    lc, delta_f, sampling_time, exptime = star(kicID)
+    df, f_max, f_min = delta_f/3, (3 / (2*sampling_time)), 0.5 # magic number
+    t_fit, flux_fit, weight_fit = mask_vals(lc)
+
+    freq_full, power_full = pg_full(f_min, f_max, df, lc)
+    freq_mini, power_mini = pg_mini(f_min, f_max, df, lc)
+
+    indices = get_filtered_peaks(12, freq_mini, power_mini)
+    refined_freq, refined_power, second_derivatives = refine_peaks(freq_mini, power_mini, indices)
+    fc = folding_freq(delta_f, freq_full, power_full, sampling_time, False)
+    regions, final_freqs, chi2s = region_and_freq(indices, fc, df, freq_mini, power_mini, t_fit, flux_fit, weight_fit, exptime)
+    nulls = null_chi_squared(flux_fit, weight_fit)
+    delta_chi2s = [None if c is None else nulls - c for c in chi2s]
+    sharpnesses = sharpness(second_derivatives, refined_power)
+
+    a_early, a_late, b_early, b_late = check_coherence(t_fit, flux_fit, weight_fit, final_freqs, exptime)
+    rate_of_phase, rate_of_amp = change_in_phase_and_amp(a_early, a_late, b_early, b_late, t_fit) #half
+    all, half, quartiles, eighths = coherence_all(t_fit, flux_fit, weight_fit, final_freqs, exptime)
+    amp_change, phase_change, sigma_lnA, sigma_phi4, sigma_phij = sampling_stats(all, quartiles, eighths)
+
+    if save:
+        date_str = datetime.now().strftime("%Y-%m-%d") 
+        output_dir = os.path.join("star_outputs", f"{date_str}_{kicID}")
+        os.makedirs(output_dir, exist_ok=True)
+        
+        data = Table()
+    
+    
+        data['Modes'] = safe_arr(final_freqs)
+        data['Regions'] = safe_arr(regions)
+        data['Mode in region A'] = safe_arr(refined_freq)
+        data['Sharp'] = safe_arr(sharpnesses)
+        data['Delta chi2'] = safe_arr(delta_chi2s)
+        data['Change of phase(2)'] = safe_arr(rate_of_phase)
+        data['Change of lnA(2)'] = safe_arr(rate_of_amp)
+        data['Sigma lnA(4)'] = safe_arr(sigma_lnA)
+        data['Sigma phi(4)'] = safe_arr(sigma_phi4)
+        data['Sigma phi(jack)'] = safe_arr(sigma_phij)
+        
+        
+        ascii.write(
+        data,
+        kicID + '_stats' + '.csv',
+        overwrite=True,
+        format="csv",
+        formats={
+            "Modes": "{:.7f}",
+            "Mode in region A": "{:.7f}",
+            "Sharp": "{:.7e}",
+            "Delta chi2": "{:.7e}",
+            "Change of phase(2)": "{:.7e}",
+            "Change of lnA(2)": "{:.7e}",
+            "Sigma lnA(4)": "{:.7e}",
+            "Sigma phi(4)": "{:.7e}",
+            "Sigma phi(jack)" : "{:.7e}"
+        }
+        )
+
+    if plots:
+        #plot lightcurve
+        plt.plot(lc.time.value, lc.flux.value, color = "k")
+        plt.xlabel("Time")
+        plt.ylabel("Flux")
+        plt.title(f"Lightcurve of {kicID}")
+        plt.show()
+        if save:
+            plt.savefig(os.path.join(output_dir, f"{kicID}_lightcurve.png"))
+
+
+        plt.plot(freq_full, power_full, 'k.')
+        valid_points = [(f, p) for f, p in zip(final_freqs, refined_power) if f is not None and p is not None]
+        if valid_points:
+            valid_freqs, valid_power = zip(*valid_points)
+            plt.scatter(valid_freqs, valid_power, color='red', marker='o')
+        plt.scatter(final_freqs, refined_power, color = 'red', marker = 'o')
+        plt.xlabel("Frequency (1/day)")
+        plt.ylabel("Power")
+        plt.axvline(fc)
+        plt.axvline(fc/2)
+        plt.title(f"Full Periodogram of {kicID}")
+        plt.show()
+        if save:
+            plt.savefig(os.path.join(output_dir, f"{kicID}_fullperio.png"))
+
+        plt.plot(freq_mini, power_mini, 'k.')
+        plt.xlabel("Frequency (1/day)")
+        plt.ylabel("Power")
+        plt.title(f"Region A Periodogram of {kicID}")
+        plt.show()
+        if save:
+            plt.savefig(os.path.join(output_dir, f"{kicID}_miniperio.png"))
+
+        plt.plot(freq_mini, power_mini, 'k-')
+        plt.xlabel("Frequency (1/day)")
+        plt.ylabel("Log Power")
+        plt.semilogy()
+        plt.title(f"Region A Log Periodogram of {kicID}")
+        plt.show()
+        if save:
+            plt.savefig(os.path.join(output_dir, f"{kicID}_mini_logperio.png"))
+        
+        #fc = folding_freq(delta_f, freq_full, power_full, sampling_time, True)
+
+        #15 point graph
+        fig, axes = plt.subplots(3, 4, figsize=(16, 9))
+        plt.suptitle(f"15 Point figure of {kicID}", fontsize = 18)
+        
+        for idx, (ax, points1, points2, points3, points4, p1, p2, p3, p4) in enumerate(zip(axes.flat, all, half, quartiles, eighths, rate_of_phase, 
+                                                                                           sigma_phi4, sigma_phij, phase_change)):
+            if points1 is None or points2 is None or points3 is None or points4 is None:
+                ax.set_visible(False)
+                continue
+            
+            try:
+                a_all = points1[0]
+                b_all = points1[1]
+        
+                a_half = [row[0] for row in points2 if row[0] is not None and row[1] is not None]
+                b_half = [row[1] for row in points2 if row[0] is not None and row[1] is not None]
+        
+                a_quarter = [row[0] for row in points3 if row[0] is not None and row[1] is not None]
+                b_quarter = [row[1] for row in points3 if row[0] is not None and row[1] is not None]
+        
+                a_eighth = [row[0] for row in points4 if row[0] is not None and row[1] is not None]
+                b_eighth = [row[1] for row in points4 if row[0] is not None and row[1] is not None]
+        
+                ax.scatter(a_half, b_half, color='orange', marker='*')
+                ax.scatter(a_quarter, b_quarter, color='blue', marker='+')
+                ax.scatter(a_eighth, b_eighth, color='k', marker='.')
+                ax.scatter(a_all, b_all, color='red', marker='x')
+        
+                p1_str = f"{p1:0.8e}" if p1 is not None else "None"
+                p2_str = f"{p2:0.8e}" if p2 is not None else "None"
+                p3_str = f"{p3:0.8e}" if p3 is not None else "None"
+        
+                ax.text(0.05, 0.95, f"phase change(2): {p1_str}", transform=ax.transAxes,
+                        fontsize=8, verticalalignment='top', color='green')
+                ax.text(0.05, 0.88, f"sigma phi(4): {p2_str}", transform=ax.transAxes,
+                        fontsize=8, verticalalignment='top', color='green')
+                ax.text(0.05, 0.81, f"sigma phi(jack): {p3_str}", transform=ax.transAxes,
+                        fontsize=8, verticalalignment='top', color='green')
+        
+                freq_label = f"{final_freqs[idx]:0.8f}" if final_freqs[idx] is not None else "None"
+                ax.set_title(freq_label)
+        
+                ax.axvline(0, color='k')
+                ax.axhline(0, color='k')
+                ax.set_xlabel("a points")
+                ax.set_ylabel("b points")
+                ax.grid(True)
+                ax.ticklabel_format(style='sci', scilimits=(-3, 3), axis='both')
+                ax.axis('equal')
+        
+            except Exception as e:
+                ax.set_visible(False)
+                continue
+
+        
+        plt.tight_layout()
+        if save:
+            plt.savefig(os.path.join(output_dir, f"{kicID}_15point.png"))
 
 
 
