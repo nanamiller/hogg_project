@@ -288,6 +288,7 @@ def find_min_and_refine(xs, ys):
     - Raises `IndexError` if minimum is at the edge (index 0 or len-1)
     """
     indxs, _ = find_peaks(-ys)
+
     if len(indxs) == 0:
         raise ValueError("find_min_and_refine(): no local minima found")
     
@@ -467,14 +468,30 @@ def region_and_freq(indices, folding_freq, f_min, unrefined_freq, unrefined_powe
         fine_freqsA = np.arange(A[i] - 5 * f_min, A[i] + 5 * f_min, 0.2 * f_min)
         chi2_fineA = np.array([integral_chi_squared(2 * np.pi * f, t_fit, flux_fit, weight_fit, T) for f in fine_freqsA])
         best_freqA, best_chi2A = find_min_and_refine(fine_freqsA, chi2_fineA)
+        
+        plt.plot(fine_freqsA, chi2_fineA, label='Region A')
+        plt.axvline(best_freqA)
+        plt.show()
+        plt.close()
 
         fine_freqsB = np.arange(B[i] - 5 * f_min, B[i] + 5 * f_min, 0.2 * f_min)
         chi2_fineB = np.array([integral_chi_squared(2 * np.pi * f, t_fit, flux_fit, weight_fit, T) for f in fine_freqsB])
         best_freqB, best_chi2B = find_min_and_refine(fine_freqsB, chi2_fineB)
 
+        plt.plot(fine_freqsB, chi2_fineB, label='Region B')
+        plt.axvline(best_freqB)
+        plt.show()
+        plt.close()
+
         fine_freqsC = np.arange(C[i] - 5 * f_min, C[i] + 5 * f_min, 0.2 * f_min)
         chi2_fineC = np.array([integral_chi_squared(2 * np.pi * f, t_fit, flux_fit, weight_fit, T) for f in fine_freqsC])
         best_freqC, best_chi2C = find_min_and_refine(fine_freqsC, chi2_fineC)
+
+        plt.plot(fine_freqsC, chi2_fineC, label='Region C')
+        plt.axvline(best_freqC)
+        plt.show()
+        plt.close()
+    
 
         if best_chi2A <= best_chi2B and best_chi2A <= best_chi2C:
             regions[loc] = "A"
@@ -633,7 +650,7 @@ def null_chi_squared(ys, weights):
     
     a0 = np.sum(weights * ys) / total_weight
     null_chisq = np.sum(weights * (ys - a0) ** 2)
-    return null_chisq
+    return np.array(null_chisq)
 
 def mask_vals(lc):
     """
@@ -873,9 +890,21 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
     indices = get_filtered_peaks(max_peaks, freq_mini, power_mini)
     refined_freq, refined_power, second_derivatives = refine_peaks(freq_mini, power_mini, indices)
     fc = folding_freq(delta_f, freq_full, power_full, sampling_time, False)
+    print("star_search() indices:", indices, "fc:", fc, "df;", df)
     regions, final_freqs, chi2s = region_and_freq(indices, fc, df, freq_mini, power_mini, t_fit, flux_fit, weight_fit, exptime)
     nulls = null_chi_squared(flux_fit, weight_fit)
-    delta_chi2s = [None if c is None else nulls - c for c in chi2s]
+    delta_chi2s = np.array([None if c is None else nulls - c for c in chi2s])
+
+    if np.any(delta_chi2s >= 100):
+        print(f"delta_chi2s for {kicID}", delta_chi2s)
+        print(f"exptime for {kicID} is {exptime}")
+
+
+    
+    else:
+        print("No delta chi >= 100. skipping star", kicID)
+        return  # or exit(), raise, etc.
+
     sharpnesses = sharpness(second_derivatives, refined_power)
 
     a_early, a_late, b_early, b_late = check_coherence(t_fit, flux_fit, weight_fit, final_freqs, exptime)
@@ -945,22 +974,22 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
 
     if plots:
         #plot lightcurve
-        if inject:
-            plt.plot(lc.time.value, lc.flux.value, color = "k", label = "Injected Lightcurve")
-            plt.xlabel("Time")
-            plt.ylabel("Flux")
-            plt.title(f"Lightcurve of {kicID}")
-            plt.show()
-            if save:
-                plt.savefig(os.path.join(output_dir, f"{kicID}_injected_lightcurve.png"))
-        else:
-            plt.plot(lc.time.value, lc.flux.value, color = "k", label = "Lightcurve")
-            plt.xlabel("Time")
-            plt.ylabel("Flux")
-            plt.title(f"Lightcurve of {kicID}")
-            plt.show()
-            if save:
-                plt.savefig(os.path.join(output_dir, f"{kicID}_lightcurve.png"))
+        # if inject:
+        #     plt.plot(lc.time.value, lc.flux.value, color = "k", label = "Injected Lightcurve")
+        #     plt.xlabel("Time")
+        #     plt.ylabel("Flux")
+        #     plt.title(f"Lightcurve of {kicID}")
+        #     plt.show()
+        #     if save:
+        #         plt.savefig(os.path.join(output_dir, f"{kicID}_injected_lightcurve.png"))
+        # else:
+        #     plt.plot(lc.time.value, lc.flux.value, color = "k", label = "Lightcurve")
+        #     plt.xlabel("Time")
+        #     plt.ylabel("Flux")
+        #     plt.title(f"Lightcurve of {kicID}")
+        #     plt.show()
+        #     if save:
+        #         plt.savefig(os.path.join(output_dir, f"{kicID}_lightcurve.png"))
 
 
         if inject:
@@ -1000,12 +1029,12 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
             valid_points = [(f, p) for f, p in zip(final_freqs, refined_power) if f is not None and p is not None]
             if valid_points:
                 valid_freqs, valid_power = zip(*valid_points)
-                plt.scatter(valid_freqs, valid_power, color='red', marker='o')
-            plt.scatter(final_freqs, refined_power, color = 'red', marker = 'o')
+                #plt.scatter(valid_freqs, valid_power, color='red', marker='o')
+            #plt.scatter(final_freqs, refined_power, color = 'red', marker = 'o')
             plt.xlabel("Frequency (1/day)")
             plt.ylabel("Power")
-            plt.axvline(fc)
-            plt.axvline(fc/2)
+            #plt.axvline(fc)
+            #plt.axvline(fc/2)
             plt.title(f"Region A Injected Periodogram of {kicID}")
             plt.show()
             if save:
@@ -1015,12 +1044,11 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
             valid_points = [(f, p) for f, p in zip(final_freqs, refined_power) if f is not None and p is not None]
             if valid_points:
                 valid_freqs, valid_power = zip(*valid_points)
-                plt.scatter(valid_freqs, valid_power, color='red', marker='o')
-            plt.scatter(final_freqs, refined_power, color = 'red', marker = 'o')
+                #plt.scatter(valid_freqs, valid_power, color='red', marker='o')
             plt.xlabel("Frequency (1/day)")
             plt.ylabel("Power")
-            plt.axvline(fc)
-            plt.axvline(fc/2)
+            #plt.axvline(fc)
+            #plt.axvline(fc/2)
             plt.title(f"Region A  Periodogram of {kicID}")
             plt.show()
             if save:
@@ -1097,6 +1125,7 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
                 ax.grid(True)
                 ax.ticklabel_format(style='sci', scilimits=(-3, 3), axis='both')
                 ax.axis('equal')
+                
         
             except Exception as e:
                 ax.set_visible(False)
@@ -1104,12 +1133,18 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
 
         
         plt.tight_layout()
+        plt.show()
+
         if inject:
             if save:
                 plt.savefig(os.path.join(output_dir, f"{kicID}_injected_15point.png"))
         else:
             if save:
                 plt.savefig(os.path.join(output_dir, f"{kicID}_15point.png"))
+        plt.close(fig)
+        
+        
+
 
 
 
