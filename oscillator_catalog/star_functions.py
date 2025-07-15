@@ -11,7 +11,8 @@ import os
 from astropy.table import Table
 from astropy.io import ascii
 from lightkurve import LightCurve
-
+from lightkurve import LightkurveError
+import time
 
 f_avoid = 3.5 / 372.5
 lc_exptime = (29.4) / (60 * 24) #days, see Kepler Data Processing Handbook, Section 3.1
@@ -45,14 +46,33 @@ def star(kic_id, exptime='long'):
         print(f"nana.star(): no results for {kic_id} at this cadence")
         return None, None, None, None
 
+    try:
+        lc_collection = search_result.download_all()
     
-    lc_collection = search_result.download_all()
+    except LightkurveError as e:
+        print(f"LightkurveError for {kic_id}: {e}")
+
+        try:
+            path = str(e).split("\n")[1].strip()  # extract path from error message
+            if os.path.exists(path):
+                os.remove(path)
+                print(f"Deleted corrupt file: {path}")
+                # Retry download once
+                lc_collection = search_result.download_all()
+                lc = lc_collection.stitch()
+            else:
+                print(f"Path not found: {path}")
+                return None, None, None, None
+        except Exception as delete_error:
+            print(f"Retry failed for {kic_id}: {delete_error}")
+            return None, None, None, None
+    
     lc = lc_collection.stitch()
     time, flux = reorder_inputs(lc.time.value, lc.flux.value)
 
     if not np.all(np.diff(time) > 0):
         print("nana.star(): times not in order")
-        raise ValueError("Times are not in order")
+        #raise ValueError("Times are not in order")
     delta_f = (1/(time[-1] - time[0]))
     sampling_time= np.median(np.diff(time))
     
@@ -61,7 +81,7 @@ def star(kic_id, exptime='long'):
     if not np.all(np.diff(time) > 0.90 * sampling_time): #magic
         print("nana.star(): some time intervals out of spec")
         print("nana.star(): median dt = ", sampling_time)
-        raise ValueError("some time intervals out of spec")
+        #raise ValueError("some time intervals out of spec")
     
     exptime = None
     if sampling_time > 0.9 * lc_exptime: 
@@ -70,7 +90,7 @@ def star(kic_id, exptime='long'):
         exptime = sc_exptime
     if exptime is None:
         print("nana.star(): no consistent exptime")
-        raise ValueError("no consistent exptime")
+        #raise ValueError("no consistent exptime")
 
     return lc, delta_f, sampling_time, exptime
 
@@ -290,7 +310,8 @@ def find_min_and_refine(xs, ys):
     indxs, _ = find_peaks(-ys)
 
     if len(indxs) == 0:
-        raise ValueError("find_min_and_refine(): no local minima found")
+        return None, None
+        #raise ValueError("find_min_and_refine(): no local minima found")
     
     min_index = indxs[np.argsort(ys[indxs])[:1]]
     if min_index < 1 or min_index > len(xs) - 2:
@@ -462,52 +483,42 @@ def region_and_freq(indices, folding_freq, f_min, unrefined_freq, unrefined_powe
     
     A, B, C = fas, folding_freq - fas, folding_freq + fas
 
-    
 
     for i, loc in enumerate(valid_locs):
         fine_freqsA = np.arange(A[i] - 5 * f_min, A[i] + 5 * f_min, 0.2 * f_min)
         chi2_fineA = np.array([integral_chi_squared(2 * np.pi * f, t_fit, flux_fit, weight_fit, T) for f in fine_freqsA])
         best_freqA, best_chi2A = find_min_and_refine(fine_freqsA, chi2_fineA)
         
-        plt.plot(fine_freqsA, chi2_fineA, label='Region A')
-        plt.axvline(best_freqA)
-        plt.show()
-        plt.close()
 
         fine_freqsB = np.arange(B[i] - 5 * f_min, B[i] + 5 * f_min, 0.2 * f_min)
         chi2_fineB = np.array([integral_chi_squared(2 * np.pi * f, t_fit, flux_fit, weight_fit, T) for f in fine_freqsB])
         best_freqB, best_chi2B = find_min_and_refine(fine_freqsB, chi2_fineB)
 
-        plt.plot(fine_freqsB, chi2_fineB, label='Region B')
-        plt.axvline(best_freqB)
-        plt.show()
-        plt.close()
-
         fine_freqsC = np.arange(C[i] - 5 * f_min, C[i] + 5 * f_min, 0.2 * f_min)
         chi2_fineC = np.array([integral_chi_squared(2 * np.pi * f, t_fit, flux_fit, weight_fit, T) for f in fine_freqsC])
         best_freqC, best_chi2C = find_min_and_refine(fine_freqsC, chi2_fineC)
 
-        plt.plot(fine_freqsC, chi2_fineC, label='Region C')
-        plt.axvline(best_freqC)
-        plt.show()
-        plt.close()
-    
+        freqs = np.array([best_freqA, best_freqB, best_freqC])
+        chi2s = np.array([best_chi2A, best_chi2B, best_chi2C])
+        regs = np.array(['A', 'B', 'C'])
 
-        if best_chi2A <= best_chi2B and best_chi2A <= best_chi2C:
-            regions[loc] = "A"
-            best_freqs[loc] = best_freqA
-            best_chi2s[loc] = best_chi2A
-        elif best_chi2B < best_chi2A and best_chi2B < best_chi2C:
-            regions[loc] = "B"
-            best_freqs[loc] = best_freqB
-            best_chi2s[loc] = best_chi2B
+        no_nones = np.array([c is not None for c in chi2s])
+
+        if np.any(no_nones):
+            freqs = freqs[no_nones]
+            chi2s = chi2s[no_nones]
+            regs = regs[no_nones]
+
+            low_chi_ind = np.argmin(chi2s)
+            regions[loc] = regs[low_chi_ind]
+            best_freqs[loc] = freqs[low_chi_ind]
+            best_chi2s[loc] = chi2s[low_chi_ind]
         else:
-            regions[loc] = "C"
-            best_freqs[loc] = best_freqC
-            best_chi2s[loc] = best_chi2C
+            regions[loc] = None
+            best_freqs[loc] = None
+            best_chi2s[loc] = None
 
     return regions, best_freqs, best_chi2s
-
 
 def check_coherence(ts, ys, weights, final_freq, T):
     """
@@ -871,6 +882,10 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
 
     lc, delta_f, sampling_time, exptime = star(kicID)
 
+    if None in [lc]:
+        print(f"Skipping {kicID} because star() returned None")
+        return None
+
     df, f_max, f_min = delta_f/3, (3 / (2*sampling_time)), 0.5 # magic number
     t_fit, flux_fit, weight_fit = mask_vals(lc)
     
@@ -890,14 +905,13 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
     indices = get_filtered_peaks(max_peaks, freq_mini, power_mini)
     refined_freq, refined_power, second_derivatives = refine_peaks(freq_mini, power_mini, indices)
     fc = folding_freq(delta_f, freq_full, power_full, sampling_time, False)
-    print("star_search() indices:", indices, "fc:", fc, "df;", df)
     regions, final_freqs, chi2s = region_and_freq(indices, fc, df, freq_mini, power_mini, t_fit, flux_fit, weight_fit, exptime)
     nulls = null_chi_squared(flux_fit, weight_fit)
     delta_chi2s = np.array([None if c is None else nulls - c for c in chi2s])
 
     if np.any(delta_chi2s >= 100):
         print(f"delta_chi2s for {kicID}", delta_chi2s)
-        print(f"exptime for {kicID} is {exptime}")
+        #print(f"exptime for {kicID} is {exptime}")
 
 
     
@@ -914,21 +928,21 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
 
     if save:
         date_str = datetime.now().strftime("%Y-%m-%d") 
-        output_dir = os.path.join("star_outputs", f"{date_str}_{kicID}")
+        output_dir = os.path.join("cool_kics_from_100", f"{date_str}_{kicID}")
         os.makedirs(output_dir, exist_ok=True)
 
         
         data = Table()
     
     
-        data['Modes'] = safe_arr(final_freqs)
+        data['Freqs'] = safe_arr(final_freqs)
         data['Regions'] = safe_arr(regions)
-        data['Mode in region A'] = safe_arr(refined_freq)
-        data['Sharp'] = safe_arr(sharpnesses)
+        data['Freq in region A'] = safe_arr(refined_freq)
+        #data['Sharp'] = safe_arr(sharpnesses)
         data['Delta chi2'] = safe_arr(delta_chi2s)
-        data['Change of phase(2)'] = safe_arr(rate_of_phase)
-        data['Change of lnA(2)'] = safe_arr(rate_of_amp)
-        data['Sigma lnA(4)'] = safe_arr(sigma_lnA)
+        #data['Change of phase(2)'] = safe_arr(rate_of_phase)
+        #data['Change of lnA(2)'] = safe_arr(rate_of_amp)
+        #data['Sigma lnA(4)'] = safe_arr(sigma_lnA)
         data['Sigma phi(4)'] = safe_arr(sigma_phi4)
         data['Sigma phi(jack)'] = safe_arr(sigma_phij)
         
@@ -939,13 +953,13 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
             overwrite=True,
             format="csv",
             formats={
-                "Modes": "{:.7f}",
-                "Mode in region A": "{:.7f}",
-                "Sharp": "{:.7e}",
+                "Freqs": "{:.7f}",
+                "Freq in region A": "{:.7f}",
+                #"Sharp": "{:.7e}",
                 "Delta chi2": "{:.7e}",
-                "Change of phase(2)": "{:.7e}",
-                "Change of lnA(2)": "{:.7e}",
-                "Sigma lnA(4)": "{:.7e}",
+                #"Change of phase(2)": "{:.7e}",
+                #"Change of lnA(2)": "{:.7e}",
+                #"Sigma lnA(4)": "{:.7e}",
                 "Sigma phi(4)": "{:.7e}",
                 "Sigma phi(jack)" : "{:.7e}"
             }
@@ -953,18 +967,18 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
         else:
             ascii.write(
             data,
-            kicID + '_stats' + '.csv',
+            output = os.path.join(output_dir, kicID + '_stats.csv'),
             overwrite=True,
             format="csv",
             formats={
-                "Modes": "{:.7f}",
+                "Freqs": "{:.7f}",
                 "Regions": "{}",
-                "Mode in region A": "{:.7f}",
-                "Sharp": "{:.7e}",
+                "Freq in region A": "{:.7f}",
+                #"Sharp": "{:.7e}",
                 "Delta chi2": "{:.7e}",
-                "Change of phase(2)": "{:.7e}",
-                "Change of lnA(2)": "{:.7e}",
-                "Sigma lnA(4)": "{:.7e}",
+                #"Change of phase(2)": "{:.7e}",
+                #"Change of lnA(2)": "{:.7e}",
+                #"Sigma lnA(4)": "{:.7e}",
                 "Sigma phi(4)": "{:.7e}",
                 "Sigma phi(jack)" : "{:.7e}"
             }
@@ -1004,9 +1018,10 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
             plt.axvline(fc)
             plt.axvline(fc/2)
             plt.title(f"Full Injected Periodogram of {kicID}")
-            plt.show()
             if save:
                 plt.savefig(os.path.join(output_dir, f"{kicID}_injected_fullperio.png"))
+            plt.show()
+
 
         else:
             plt.plot(freq_full, power_full, 'k.')
@@ -1020,9 +1035,10 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
             plt.axvline(fc)
             plt.axvline(fc/2)
             plt.title(f"Full Periodogram of {kicID}")
-            plt.show()
+            
             if save:
                 plt.savefig(os.path.join(output_dir, f"{kicID}_fullperio.png"))
+            plt.show()
 
         if inject:
             plt.plot(freq_mini, power_mini, 'k.')
@@ -1036,9 +1052,10 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
             #plt.axvline(fc)
             #plt.axvline(fc/2)
             plt.title(f"Region A Injected Periodogram of {kicID}")
-            plt.show()
             if save:
                 plt.savefig(os.path.join(output_dir, f"{kicID}_injected_miniperio.png"))
+            plt.show()
+
         else:
             plt.plot(freq_mini, power_mini, 'k.')
             valid_points = [(f, p) for f, p in zip(final_freqs, refined_power) if f is not None and p is not None]
@@ -1050,19 +1067,21 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
             #plt.axvline(fc)
             #plt.axvline(fc/2)
             plt.title(f"Region A  Periodogram of {kicID}")
-            plt.show()
+            
             if save:
                 plt.savefig(os.path.join(output_dir, f"{kicID}_miniperio.png"))
-        
+            plt.show()
+
         if inject:
             plt.plot(freq_mini, power_mini, 'k-')
             plt.xlabel("Frequency (1/day)")
             plt.ylabel("Log Power")
             plt.semilogy()
             plt.title(f"Region A Log Injected Periodogram of {kicID}")
-            plt.show()
+            
             if save:
                 plt.savefig(os.path.join(output_dir, f"{kicID}_injected_mini_logperio.png"))
+            plt.show()
         else:
 
             plt.plot(freq_mini, power_mini, 'k-')
@@ -1070,9 +1089,10 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
             plt.ylabel("Log Power")
             plt.semilogy()
             plt.title(f"Region A Log Periodogram of {kicID}")
-            plt.show()
+            
             if save:
                 plt.savefig(os.path.join(output_dir, f"{kicID}_mini_logperio.png"))
+            plt.show()
         
         #fc = folding_freq(delta_f, freq_full, power_full, sampling_time, True)
 
@@ -1133,14 +1153,16 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
 
         
         plt.tight_layout()
-        plt.show()
+        
 
         if inject:
             if save:
                 plt.savefig(os.path.join(output_dir, f"{kicID}_injected_15point.png"))
+            plt.show()
         else:
             if save:
                 plt.savefig(os.path.join(output_dir, f"{kicID}_15point.png"))
+            plt.show()
         plt.close(fig)
         
         
