@@ -18,7 +18,7 @@ f_avoid = 3.5 / 372.5
 lc_exptime = (29.4) / (60 * 24) #days, see Kepler Data Processing Handbook, Section 3.1
 sc_exptime = (58.8) / (60 * 60 * 24) #days, see Kepler Data Processing Handbook, Section 3.1
 
-def star(kic_id, exptime='long'):
+def get_kepler_data(kic_id, exptime='long'):
     """
     ## Inputs:
     `kic_id`: Kepler ID (str)
@@ -170,10 +170,8 @@ def fit_parabola(xs, ys, index):
     - Index must not be 0 or `len(xs) - 1`; otherwise slice will be out of bounds
     - Assumes `xs` is ordered
     """
-
     if index < 1 or index > len(xs) - 2:
         raise IndexError("fit_parabola(): index must be between 1 and len(xs) - 2")
-    
     return np.linalg.solve(design_matrix(xs[index-1:index+2]), ys[index-1:index+2])
 
 def refine_peak(xs, ys, index):
@@ -194,6 +192,8 @@ def refine_peak(xs, ys, index):
     """
     b, m, q = fit_parabola(xs, ys, index)
     x_peak = -m / q
+    if x_peak < xs[0] or x_peak > xs[-1]:
+        return np.nan, np.nan, np.nan
     y_peak = 0.5 * q * x_peak**2 + m * x_peak + b
     return x_peak, y_peak, q
 
@@ -223,9 +223,9 @@ def refine_peaks(xs, ys, indices):
     #xs_refined, ys_refined, second_derivatives = zip(*map(foo, indices))
 
     n = len(indices)
-    xs_refined = np.full(n, None)
-    ys_refined = np.full(n, None)
-    second_derivatives = np.full(n, None)
+    xs_refined = np.full(n, np.nan)
+    ys_refined = np.full(n, np.nan)
+    second_derivatives = np.full(n, np.nan)
 
     for j, i in enumerate(indices):
         result = check_refine(xs, ys, i)
@@ -275,11 +275,11 @@ def folding_freq(delta_f, fs, ps, sampling_time, makeplots=False):
 
     small, tiny = 20 * delta_f, 0.25 * delta_f
     fc_candidates = np.arange(fc_guess - small, fc_guess + small, tiny)
+    #this should just be one line of numpy
     foos_c = np.array([np.nansum(psA * cs(fc - fsA)) for fc in fc_candidates])
 
-    fc_index = get_filtered_peaks(1, fc_candidates, foos_c)
-    fc, _, _ = refine_peaks(fc_candidates, foos_c, fc_index)
-    fc = fc[0]
+    fc_index = np.argmax(foos_c)
+    fc, _, _ = refine_peak(fc_candidates, foos_c, fc_index)
 
     if makeplots:
         plt.plot(fc_candidates, foos_c)
@@ -310,7 +310,7 @@ def find_min_and_refine(xs, ys):
     indxs, _ = find_peaks(-ys)
 
     if len(indxs) == 0:
-        return None, None
+        return np.nan, np.nan
         #raise ValueError("find_min_and_refine(): no local minima found")
     
     min_index = indxs[np.argsort(ys[indxs])[:1]]
@@ -328,12 +328,14 @@ def get_filtered_peaks(num_of_peaks, xs, ys):
     `ys`: numpy array of y values (power spectrum)
 
     ## Outputs:
-    NumPy array of peak indices (length ≤ `num_of_peaks`), filtered to avoid clustering
+    NumPy array of peak indices (length ≤ `num_of_peaks`), filtered to avoid clustering and remove small peaks
 
     ## Bugs:
+    - Needs an additional amplitude cut, Hogg is goign to provide 
     - Depends on global variable `f_avoid`, which must be defined externally
     - Assumes `xs` is ordered and evenly spaced
     - No NaN handling in `ys`
+    - uses append
     """
     indxs, _ = find_peaks(ys)
     if len(indxs) == 0:
@@ -470,25 +472,24 @@ def region_and_freq(indices, folding_freq, f_min, unrefined_freq, unrefined_powe
     ## Bugs:
     - Assumes `refine_peaks` succeeds for all given indices
     - No handling if `fine_freqsX` are empty or out of bounds
+    - probably this should just run on one index at a time, and the loop over indices should ne in the calling function
     """
     valid_locs = [j for j, val in enumerate(indices) if val is not None]
     valid_indices = [indices[j] for j in valid_locs]
     
     N = len(indices)
-    regions = np.full(N, None)
-    best_freqs = np.full(N, None)
-    best_chi2s = np.full(N, None)
+    regions = np.full(N, np.nan)
+    best_freqs = np.full(N, np.nan)
+    best_chi2s = np.full(N, np.nan)
 
     fas, _, _ = refine_peaks(unrefined_freq, unrefined_power, valid_indices)
     
     A, B, C = fas, folding_freq - fas, folding_freq + fas
 
-
     for i, loc in enumerate(valid_locs):
         fine_freqsA = np.arange(A[i] - 5 * f_min, A[i] + 5 * f_min, 0.2 * f_min)
         chi2_fineA = np.array([integral_chi_squared(2 * np.pi * f, t_fit, flux_fit, weight_fit, T) for f in fine_freqsA])
         best_freqA, best_chi2A = find_min_and_refine(fine_freqsA, chi2_fineA)
-        
 
         fine_freqsB = np.arange(B[i] - 5 * f_min, B[i] + 5 * f_min, 0.2 * f_min)
         chi2_fineB = np.array([integral_chi_squared(2 * np.pi * f, t_fit, flux_fit, weight_fit, T) for f in fine_freqsB])
@@ -678,6 +679,7 @@ def mask_vals(lc):
     - `weight_fit`: corresponding weights (1 / sigma^2)
 
     ## Bugs:
+    - not obvious that we need this function
     - Assumes `lc.time`, `lc.flux`, and `lc.flux_err` exist and have `.value` attributes
     - No check for zero or negative `flux_err` (could produce invalid weights)
     - Assumes all arrays are 1D and compatible in shape
@@ -695,7 +697,7 @@ def mask_vals(lc):
 
     return t_fit, flux_fit, weight_fit
 
-def pg_full(f_min, f_max, df, lc):
+def get_periodogram(f_min, f_max, df, lc):
     """
     ## Inputs:
     `f_min`: minimum frequency (float, 1/day) — sets frequency resolution  
@@ -726,38 +728,6 @@ def pg_full(f_min, f_max, df, lc):
         print(f"pg_full(): Error during periodogram calculation: {e}")
         return None, None
 
-def pg_mini(f_min, f_max, df, lc):
-    """
-   
-    ## Inputs:
-    `f_min`: minimum frequency (float, 1/day)
-    `f_max`: maximum frequency (float, 1/day)  
-     #df is frequency spacing
-    `lc`: Lightkurve LightCurve object
-
-    ## Outputs:
-    Two NumPy arrays:
-    - `freq_mini`: frequency grid (1/day),  frequency range (up to `f_max/3`)  
-    - `power_mini`: corresponding Lomb-Scargle power spectrum values
-
-    ## Bugs:
-    - Assumes `f_min` > 0 and `f_max` > `f_min`
-    - No check for empty frequency grid if range is too small
-    - Assumes `lc.to_periodogram()` succeeds without errors
-    """
-    try:
-        frequency_grid_mini = np.arange(f_min, f_max / 3, df) / u.day
-        pg = lc.to_periodogram(
-            method='lombscargle',
-            normalization='psd',
-            frequency=frequency_grid_mini
-        )
-        power_mini = pg.power.value
-        freq_mini = pg.frequency.to(1 / u.day).value
-        return freq_mini, power_mini
-    except Exception as e:
-        print(f"pg_mini(): Error during periodogram calculation: {e}")
-        return None, None
 
 def splitting(ts, K, jackknife = True):
     '''
@@ -875,20 +845,22 @@ def sampling_stats(alls, quartiles, eighths):
 
     return amp_change, phase_change, sigma_lnA, sigma_phi4, sigma_phij
 
-def star_search(kicID, plots = False, save = False, inject_rng = None, inject_amp = 0.01, max_peaks = 24):
-    
-    kicID = "KIC" + str(kicID).lstrip("0")
-    
+def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, inject_amp = 0.01, max_peaks = 24, chi2threshold = 100):
 
-    lc, delta_f, sampling_time, exptime = star(kicID)
+    #get the lightcurve
+    kicID = "KIC" + str(kicID).lstrip("0") 
+    lc, delta_f, sampling_time, exptime = get_kepler_data(kicID)
+    t_fit, flux_fit, weight_fit = mask_vals(lc) 
 
     if None in [lc]:
-        print(f"Skipping {kicID} because star() returned None")
+        print(f"Skipping {kicID} because get_kepler_data() returned None")
         return None
 
-    df, f_max, f_min = delta_f/3, (3 / (2*sampling_time)), 0.5 # magic number
-    t_fit, flux_fit, weight_fit = mask_vals(lc)
+    #set frequency variables  
+    over_sampling  = 3 #oversample by a factor of 3
+    df, f_maxC, f_min = delta_f/over_sampling, (3 / (2*sampling_time)), 0.5 # magic number
     
+    #if injecting, inject now
     inject = False
     if inject_rng is not None:
         inject = True
@@ -898,26 +870,28 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
         print("injection", inject_pars)
         flux_fit = inject_one_mode(t_fit, flux_fit, exptime, inject_pars)
         lc = LightCurve(time=t_fit, flux=flux_fit) #setting new lc to match yin
+    #plot lc here
 
-    freq_full, power_full = pg_full(f_min, f_max, df, lc)
-    freq_mini, power_mini = pg_mini(f_min, f_max, df, lc)
+    #get periodograms in regions A, B, and C
+    freq_full, power_full = get_periodogram(f_min, f_maxC, df, lc)
+    fc = folding_freq(delta_f, freq_full, power_full, sampling_time, False)
+    fb = 0.5 * fc
+    freq_mini, power_mini = get_periodogram(f_min, fb, df, lc)
+    #plot periodograms here
 
+    #find and refine periodogram peaks
     indices = get_filtered_peaks(max_peaks, freq_mini, power_mini)
     refined_freq, refined_power, second_derivatives = refine_peaks(freq_mini, power_mini, indices)
-    fc = folding_freq(delta_f, freq_full, power_full, sampling_time, False)
-    regions, final_freqs, chi2s = region_and_freq(indices, fc, df, freq_mini, power_mini, t_fit, flux_fit, weight_fit, exptime)
-    nulls = null_chi_squared(flux_fit, weight_fit)
-    delta_chi2s = np.array([None if c is None else nulls - c for c in chi2s])
-
-    if np.any(delta_chi2s >= 100):
-        print(f"delta_chi2s for {kicID}", delta_chi2s)
-        #print(f"exptime for {kicID} is {exptime}")
-
-
     
-    else:
-        print("No delta chi >= 100. skipping star", kicID)
-        return  # or exit(), raise, etc.
+    regions, final_freqs, chi2s = region_and_freq(indices, fc, df, freq_mini, power_mini, t_fit, flux_fit, weight_fit, exptime)
+    delta_chi2s = chi2s - null_chi_squared(flux_fit, weight_fit)
+
+    #move relevant plots before here!!!
+
+    if np.all(delta_chi2s <= chi2threshold):
+        print(f"No high chi2s modes in {kicID}")
+        return None
+
 
     sharpnesses = sharpness(second_derivatives, refined_power)
 
@@ -925,6 +899,16 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
     rate_of_phase, rate_of_amp = change_in_phase_and_amp(a_early, a_late, b_early, b_late, t_fit) #half
     all, half, quartiles, eighths = coherence_all(t_fit, flux_fit, weight_fit, final_freqs, exptime)
     amp_change, phase_change, sigma_lnA, sigma_phi4, sigma_phij = sampling_stats(all, quartiles, eighths)
+    
+    for i in range(len(delta_chi2s)):
+        if delta_chi2s[i] < 100 and delta_chi2s[i] is not None:
+            final_freqs[i], refined_power[i], refined_freq[i], regions[i] = None, None, None, None
+            all[i], half[i], quartiles[i], eighths[i] = None, None, None, None
+            sigma_phi4[i], sigma_phij[i], phase_change[i] = None, None, None
+            delta_chi2s[i] = None
+            rate_of_phase[i] = None
+            
+
 
     if save:
         date_str = datetime.now().strftime("%Y-%m-%d") 
@@ -988,22 +972,22 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
 
     if plots:
         #plot lightcurve
-        # if inject:
-        #     plt.plot(lc.time.value, lc.flux.value, color = "k", label = "Injected Lightcurve")
-        #     plt.xlabel("Time")
-        #     plt.ylabel("Flux")
-        #     plt.title(f"Lightcurve of {kicID}")
-        #     plt.show()
-        #     if save:
-        #         plt.savefig(os.path.join(output_dir, f"{kicID}_injected_lightcurve.png"))
-        # else:
-        #     plt.plot(lc.time.value, lc.flux.value, color = "k", label = "Lightcurve")
-        #     plt.xlabel("Time")
-        #     plt.ylabel("Flux")
-        #     plt.title(f"Lightcurve of {kicID}")
-        #     plt.show()
-        #     if save:
-        #         plt.savefig(os.path.join(output_dir, f"{kicID}_lightcurve.png"))
+        if inject:
+            plt.plot(lc.time.value, lc.flux.value, color = "k", label = "Injected Lightcurve")
+            plt.xlabel("Time")
+            plt.ylabel("Flux")
+            plt.title(f"Lightcurve of {kicID}")
+            plt.show()
+            if save:
+                plt.savefig(os.path.join(output_dir, f"{kicID}_injected_lightcurve.png"))
+        else:
+            plt.plot(lc.time.value, lc.flux.value, color = "k", label = "Lightcurve")
+            plt.xlabel("Time")
+            plt.ylabel("Flux")
+            plt.title(f"Lightcurve of {kicID}")
+            plt.show()
+            if save:
+                plt.savefig(os.path.join(output_dir, f"{kicID}_lightcurve.png"))
 
 
         if inject:
@@ -1083,8 +1067,10 @@ def star_search(kicID, plots = False, save = False, inject_rng = None, inject_am
                 plt.savefig(os.path.join(output_dir, f"{kicID}_injected_mini_logperio.png"))
             plt.show()
         else:
-
             plt.plot(freq_mini, power_mini, 'k-')
+            valid_points = [(f, p) for f, p in zip(final_freqs, refined_power) if f is not None and p is not None]
+            if valid_points:
+                valid_freqs, valid_power = zip(*valid_points)
             plt.xlabel("Frequency (1/day)")
             plt.ylabel("Log Power")
             plt.semilogy()
