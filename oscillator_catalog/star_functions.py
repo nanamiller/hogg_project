@@ -29,7 +29,7 @@ def get_kepler_data(kic_id, exptime='long'):
 
     ## Outputs:
     Returns a 4-tuple:
-    - `lc`: stitched Lightkurve LightCurve object (or nan if failed)
+    - `lc`:  Lightkurve lc object (or nan if failed)
     - `delta_f`: frequency resolution, 1 / total observation time
     - `sampling_time`: median time between observations (in days)
     - `exptime`:  exposure time in days (from global `lc_exptime` or `sc_exptime`)
@@ -38,7 +38,7 @@ def get_kepler_data(kic_id, exptime='long'):
     - Depends on global vals: `lc_exptime`, `sc_exptime` 
     - Fails silently when no data found
     - Rejects light curves where any `dt < 0.9 * median(dt)` — may be too strict
-    - Assumes time sampling regularity based on hardcoded magic thresholds
+    - Uses magic thresholds for time sampling
     """
     search_result = lk.search_lightcurve(kic_id, mission = 'Kepler', exptime=exptime)
     
@@ -115,6 +115,33 @@ def reorder_inputs(xs, ys):
     i = np.argsort(xs)
     return xs[i], ys[i]
 
+def get_periodogram(f_min, f_max, df, lc):
+    """
+    ## Inputs:
+    `f_min`: minimum frequency (float, 1/day) — sets frequency resolution  
+    `f_max`: maximum frequency (float, 1/day)  
+    `lc`: Lightkurve LightCurve object
+
+    ## Outputs:
+    Two NumPy arrays:
+    - `freq_full`: frequency grid (1/day)  
+    - `power_full`: corresponding Lomb-Scargle power spectrum values
+
+    ## Bugs:
+    - Assumes `f_min` > 0 and `f_max` > `f_min`
+    - No check for empty frequency grid if range is too small
+    - Assumes `lc.to_periodogram()` succeeds without errors
+    """
+    
+    frequency_grid = np.arange(f_min, f_max, df) / u.day
+    pg = lc.to_periodogram(
+        method='lombscargle',
+        normalization='psd',
+        frequency=frequency_grid
+    )
+    power = pg.power.value
+    freq = pg.frequency.to(1 / u.day).value
+    return freq, power
 
 def design_matrix(xlist):
     """
@@ -213,19 +240,47 @@ def refine_peaks(xs, ys, indices):
             
     return np.array(xs_refined), np.array(ys_refined), np.array(second_derivatives)
 
-def check_refine(xs, ys, i):
-        if np.isnan(i):
-            return np.nan
-        
-        return refine_peak(xs, ys, i)
-        
+def get_filtered_peaks(num_of_peaks, xs, ys):
+    """
+    ## Inputs:
+    `num_of_peaks`: number of peaks to return  
+    `xs`: numpy array of x values (frequencies)  
+    `ys`: numpy array of y values (power spectrum)
 
+    ## Outputs:
+    NumPy array of peak indices (length ≤ `num_of_peaks`), filtered to avoid clustering and remove small peaks
+
+    ## Bugs:
+    - Needs an additional amplitude cut, Hogg is goign to provide 
+    - Depends on global variable `f_avoid`, which must be defined externally
+    - Assumes `xs` is ordered and evenly spaced
+    - No NaN handling in `ys`
+    - uses append
+    """
+    indxs, _ = find_peaks(ys)
+    filtered = []
+
+    if len(indxs) == 0:
+        raise ValueError("get_filtered_peaks(): no peaks found in `ys`")
+    
+    indices = indxs[np.argsort(-ys[indxs])]
+
+    if (len(indices) < num_of_peaks):
+        print(f"get_filtered_peaks(): fewer than {num_of_peaks} peaks found, will return nan for missing peaks")
+
+    #checks if the peak is within some threshold by comparing to those that already passed frequencies
+    for index in indices:
+        if all(abs(xs[index] - xs[fil]) >= f_avoid for fil in filtered):
+            filtered.append(index)
+            if len(filtered) == num_of_peaks:
+                break
+    return np.array(filtered)
 
 def folding_freq(delta_f, fs, ps, sampling_time, makeplots=False):
     """
     ## Inputs:
     `delta_f`: frequency resolution
-    `fs`: numpy array of frequency values (assumed ordered)  
+    `fs`: numpy array of frequency values 
     `ps`: numpy array of power values corresponding to `fs`  
     `sampling_time`: sampling interval in days  
     `makeplots`: bool, whether to plot
@@ -235,11 +290,7 @@ def folding_freq(delta_f, fs, ps, sampling_time, makeplots=False):
 
     ## Bugs:
     - Assumes `fs` is strictly ordered (required for spline and peak detection)
-    - No check for NaNs in `fs` or `ps`
     - Removes first and last two points (`fsA = fsA[2:-2]`), assumes enough data
-    - No check for empty result from `get_filtered_peaks`
-    - Assumes `refine_peaks` will succeed and return at least one result
-    - Assumes `CubicSpline(fs, ps)` works without NaNs or duplicate x-values
     """
     fc_guess = 1. / sampling_time
     IA = fs < 0.5 * fc_guess
@@ -248,14 +299,13 @@ def folding_freq(delta_f, fs, ps, sampling_time, makeplots=False):
 
     cs = CubicSpline(fs, ps, extrapolate=False)
 
-    small, tiny = 20 * delta_f, 0.25 * delta_f
+    small, tiny = 20 * delta_f, 0.25 * delta_f #magic
     fc_candidates = np.arange(fc_guess - small, fc_guess + small, tiny)
     #this should just be one line of numpy
+    #check how much original powers from Region A match with the interpolated powers in Region A from fc_candidates
     foos_c = np.array([np.nansum(psA * cs(fc - fsA)) for fc in fc_candidates])
-
     fc_index = np.argmax(foos_c)
     fc, _, _ = refine_peak(fc_candidates, foos_c, fc_index)
-
 
     if makeplots:
         plt.plot(fc_candidates, foos_c)
@@ -283,7 +333,7 @@ def find_min_and_refine(xs, ys):
     - Raises `ValueError` if no local minima are found
     - Raises `IndexError` if minimum is at the edge (index 0 or len-1)
     """
-    ys = np.asarray(list(ys))
+    #ys = np.asarray(list(ys))
     
     indxs, _ = find_peaks(-ys)
 
@@ -297,60 +347,6 @@ def find_min_and_refine(xs, ys):
     
     refined_x, refined_y, _ = refine_peaks(xs, ys, min_index)
     return refined_x[0], refined_y[0]
-
-def get_filtered_peaks(num_of_peaks, xs, ys):
-    """
-    ## Inputs:
-    `num_of_peaks`: number of peaks to return  
-    `xs`: numpy array of x values (frequencies)  
-    `ys`: numpy array of y values (power spectrum)
-
-    ## Outputs:
-    NumPy array of peak indices (length ≤ `num_of_peaks`), filtered to avoid clustering and remove small peaks
-
-    ## Bugs:
-    - Needs an additional amplitude cut, Hogg is goign to provide 
-    - Depends on global variable `f_avoid`, which must be defined externally
-    - Assumes `xs` is ordered and evenly spaced
-    - No NaN handling in `ys`
-    - uses append
-    """
-    indxs, _ = find_peaks(ys)
-
-    print(len(indxs), "peaks found in get_filtered_peaks()")
-    if len(indxs) == 0:
-        raise ValueError("get_filtered_peaks(): no peaks found in `ys`")
-    
-    indices = indxs[np.argsort(-ys[indxs])]
-
-    if (len(indices) < num_of_peaks):
-        print(f"get_filtered_peaks(): fewer than {num_of_peaks} peaks found, will return nan for missing peaks")
-
-    filtered = []
-    for index in indices:
-        if all(abs(xs[index] - xs[i]) >= f_avoid for i in filtered):
-            filtered.append(index)
-            if len(filtered) >= num_of_peaks:
-                break
-
-    while len(filtered) < num_of_peaks:
-        filtered.append(np.nan)
-    return np.array(filtered)
-
-
-
-def inject_one_mode(ts, ys, T, in_pars):
-    #yin is the new fluxfit
-    fin, ain, bin = in_pars
-    inject_vec = np.array([0.0, ain, bin])   
-
-    xin = integral_design_matrix(ts, 2 * np.pi * fin, T)
-    yin = ys + xin @ inject_vec  
-    
-    return yin 
-
-
-
 
 def integral_design_matrix(ts, om, T):
     """
@@ -388,26 +384,7 @@ def weighted_least_squares(A, b, weights):
 
     ATA = A.T @ (A * weights[:, np.newaxis])
     ATb = A.T @ (b * weights)
-    return A @ np.linalg.solve(ATA, ATb)
-
-def weighted_least_squares_new(A, b, weights):
-    """
-    ## Inputs:
-    `A`: NxM design matrix (NumPy array)  
-    `b`: N-length observation vector (NumPy array)  
-    `weights`: N-length vector of weights (NumPy array), applied per row
-
-    ## Outputs:
-    Tuple `(x, ATA)` where:
-    - `x`: solution to the weighted least squares problem (Mx1 coefficient vector)
-    - `ATA`: weighted normal matrix `Aᵀ W A`, useful for diagnostics
-
-    ## Bugs:
-    - Assumes all inputs are NumPy arrays with compatible dimensions
-    """
-    ATA = A.T @ (A * weights[:, np.newaxis])
-    ATb = A.T @ (b * weights)
-    return np.linalg.solve(ATA, ATb), ATA
+    return np.linalg.solve(ATA, ATb)
 
 def integral_chi_squared(om, ts, ys, ws, T):
     """
@@ -427,30 +404,7 @@ def integral_chi_squared(om, ts, ys, ws, T):
     - Numerically unstable when `om * T` is small (from `integral_design_matrix`)
     """
     A = integral_design_matrix(ts, om, T)
-    return np.sum(ws * (ys - weighted_least_squares(A, ys, ws))**2)
-
-@njit
-def integral_design_matrix_test(ts, om, T):
-    N = len(ts)
-    A = np.empty((N, 3))
-    for i in range(N):
-        t = ts[i]
-        A[i, 0] = 1.0
-        A[i, 1] = (np.sin(om * (t + T / 2)) - np.sin(om * (t - T / 2))) / (om * T)
-        A[i, 2] = (-np.cos(om * (t + T / 2)) + np.cos(om * (t - T / 2))) / (om * T)
-    return A
-
-@njit
-def integral_chi_squared_test(om, ts, ys, ws, T):
-    A = integral_design_matrix_test(ts, om, T)
-    Aw = A * ws[:, None]
-    ATA = A.T @ Aw
-    ATb = A.T @ (ys * ws)
-    x = np.linalg.solve(ATA, ATb)
-    model = A @ x
-    residuals = ys - model
-    return np.sum(ws * residuals**2)
-
+    return np.sum(ws * (ys - (A @ weighted_least_squares(A, ys, ws)))**2)
 
 
 def region_and_freq(indices, folding_freq, f_min, unrefined_freq, unrefined_power, t_fit, flux_fit, weight_fit, T):
@@ -566,19 +520,16 @@ def check_coherence(ts, ys, weights, final_freq, T):
         om = 2 * np.pi * f
 
         A_early = integral_design_matrix(ts[I_early], om, T)
-        pars_early, _ = weighted_least_squares_new(A_early, ys[I_early], weights[I_early])
+        pars_early = weighted_least_squares(A_early, ys[I_early], weights[I_early])
         a_early[inx] = pars_early[1]
         b_early[inx] = pars_early[2]
 
         A_late = integral_design_matrix(ts[I_late], om, T)
-        pars_late, _ = weighted_least_squares_new(A_late, ys[I_late], weights[I_late])
+        pars_late = weighted_least_squares(A_late, ys[I_late], weights[I_late])
         a_late[inx] = pars_late[1]
         b_late[inx] = pars_late[2]
 
     return a_early, a_late, b_early, b_late
-
-# def safe_arr(arr):
-#     return [np.nan if v is None else v for v in arr]
 
 def change_in_phase_and_amp(a_early, a_late, b_early, b_late, ts):
     """
@@ -605,19 +556,15 @@ def change_in_phase_and_amp(a_early, a_late, b_early, b_late, ts):
     for i in range(N):
         a1, a2 = a_early[i], a_late[i]
         b1, b2 = b_early[i], b_late[i]
-
+        
         # Skip if any value is nan
         if any(np.isnan([a1, a2, b1, b2])):
             continue
 
         delta_r = [a2 - a1, b2 - b1]
         vector_r = [0.5 * (a2 + a1), 0.5 * (b2 + b1)]
-
         cross_z = delta_r[0] * vector_r[1] - delta_r[1] * vector_r[0]
         dot_r = np.dot(vector_r, vector_r)
-
-        # if dot_r == 0:
-        #     raise ZeroDivisionError(f"Phase vector has zero magnitude at index {i}")
 
         rates_of_phases[i] = (1 / delta_t) * (cross_z / dot_r)
         rates_of_amps[i]   = (1 / delta_t) * (np.dot(delta_r, vector_r) / dot_r)
@@ -704,36 +651,6 @@ def mask_vals(lc):
 
     return t_fit, flux_fit, weight_fit
 
-def get_periodogram(f_min, f_max, df, lc):
-    """
-    ## Inputs:
-    `f_min`: minimum frequency (float, 1/day) — sets frequency resolution  
-    `f_max`: maximum frequency (float, 1/day)  
-    `lc`: Lightkurve LightCurve object
-
-    ## Outputs:
-    Two NumPy arrays:
-    - `freq_full`: frequency grid (1/day)  
-    - `power_full`: corresponding Lomb-Scargle power spectrum values
-
-    ## Bugs:
-    - Assumes `f_min` > 0 and `f_max` > `f_min`
-    - No check for empty frequency grid if range is too small
-    - Assumes `lc.to_periodogram()` succeeds without errors
-    """
-    
-    frequency_grid = np.arange(f_min, f_max, df) / u.day
-    pg = lc.to_periodogram(
-        method='lombscargle',
-        normalization='psd',
-        frequency=frequency_grid
-    )
-    power = pg.power.value
-    freq = pg.frequency.to(1 / u.day).value
-    return freq, power
-    
-
-
 def splitting(ts, K, jackknife = True):
     '''
     # splitting()
@@ -767,7 +684,6 @@ def splitting(ts, K, jackknife = True):
 def coherence_all(ts, ys, weights, final_freq, T):
 
     N = len(final_freq)
-    #oms = np.array([f * 2 * np.pi for f in final_freq])
     all = np.full((N, 2), np.nan)
         
 
@@ -779,7 +695,7 @@ def coherence_all(ts, ys, weights, final_freq, T):
             continue
         om = f * 2 * np.pi 
         A = integral_design_matrix(ts, om, T)
-        pars, _ = weighted_least_squares_new(A, ys, weights)
+        pars = weighted_least_squares(A, ys, weights)
         all[idx][0] = pars[1]
         all[idx][1] = pars[2]
 
@@ -793,31 +709,51 @@ def coherence_all(ts, ys, weights, final_freq, T):
             om = f * 2 * np.pi
             for i, mask in enumerate(masks):
                 A = integral_design_matrix(ts[mask], om, T)
-                pars, _ = weighted_least_squares_new(A, ys[mask], weights[mask])
+                pars = weighted_least_squares(A, ys[mask], weights[mask])
                 result[idx][i][0] = pars[1] #a
                 result[idx][i][1] = pars[2] #b
+
     return all, results[0], results[1], results[2] #all, half, quarter, eighth (+jacknives)
 
 
-def sampling_stats(alls, quartiles, eighths):
+def sampling_stats(alls, halves, quartiles, eighths, ts):
 
     f_num = len(alls)
+    ts_median = np.median(ts)
+    delta_t = np.median(ts[ts > ts_median]) - np.median(ts[ts < ts_median])
+    amp_change2 = np.full((f_num), np.nan)
+    phase_change2 = np.full((f_num), np.nan)
     
-    amp_change = np.full((f_num, 4), np.nan)
-    phase_change = np.full((f_num, 4), np.nan)
+    amp_change4 = np.full((f_num, 4), np.nan) #change in rate of ln(amp) for quartile
+    phase_change4 = np.full((f_num, 4), np.nan) #change in rate of phase for quartile
 
-    sigma_lnA = np.full(f_num, np.nan)
-    sigma_phi4 = np.full(f_num, np.nan)
-    sigma_phij = np.full(f_num, np.nan)
+    sigma_lnA4 = np.full(f_num, np.nan) # 1/2 rms lnA for quartile
+    sigma_phi4 = np.full(f_num, np.nan) # 1/2 rms phase for quartile
+    sigma_phij = np.full(f_num, np.nan) #sigma phi for jacknife
     
-    for inx, (all, quartile, eighth) in enumerate(zip(alls, quartiles, eighths)):
+    for inx, (all, half, quartile, eighth) in enumerate(zip(alls, halves, quartiles, eighths)):
 
+        #change in rate of ln(a) and phase calcualtion for halves
+        
+        a1, b1, a2, b2 = half[0][0], half[0][1], half[1][0], half[1][1]
+        if any(np.isnan([a1, a2, b1, b2])):
+            continue
+        delta_r = [a2 - a1, b2 - b1]
+        vector_r = [0.5 * (a2 + a1), 0.5 * (b2 + b1)]
+        cross_z = delta_r[0] * vector_r[1] - delta_r[1] * vector_r[0]
+        dot_r = np.dot(vector_r, vector_r)
+
+        phase_change2[inx] = (1 / delta_t) * (cross_z / dot_r)
+        amp_change2[inx]   = (1 / delta_t) * (np.dot(delta_r, vector_r) / dot_r)
+
+
+        #quartile and jacknife calcualtions
         deltak_4 = np.zeros((4,2))
         deltak_j = np.zeros((8,2))
         a,b = all[0], all[1]
         if np.isnan(a) or np.isnan(b):
             continue
-    
+        
         for i, q in enumerate(quartile):   
             deltak_4[i] = [a - q[0], b - q[1]]
 
@@ -829,24 +765,35 @@ def sampling_stats(alls, quartiles, eighths):
         x_hat = x / x_norm
         y_hat = [x_hat[1], - x_hat[0]]
 
-        amp = np.dot(deltak_4, x_hat)/ x_norm
+        amp4 = np.dot(deltak_4, x_hat)/ x_norm
         phase4 = np.dot(deltak_4, y_hat)/x_norm
         phasej = np.dot(deltak_j, y_hat)/x_norm
 
-        var_lnA = 0.5 * np.sqrt(np.mean(amp ** 2))#1/2 rms lnA
+        var_lnA = 0.5 * np.sqrt(np.mean(amp4 ** 2))#1/2 rms lnA
         varphi4 = 0.5 * np.sqrt(np.mean(phase4 ** 2)) #1/2 rms phase
 
         varphij = np.sqrt((7/8) * np.sum(phasej ** 2)) #sigma phi
 
-        amp_change[inx] = amp
-        phase_change[inx] = phase4
+        amp_change4[inx] = amp4
+        phase_change4[inx] = phase4
 
-        sigma_lnA[inx] = var_lnA
+        sigma_lnA4[inx] = var_lnA
         sigma_phi4[inx] = varphi4
         sigma_phij[inx] = varphij 
-        
-    return amp_change, phase_change, sigma_lnA, sigma_phi4, sigma_phij
 
+        
+        
+    return amp_change2, phase_change2, amp_change4, phase_change4, sigma_lnA4, sigma_phi4, sigma_phij
+
+def inject_one_mode(ts, ys, T, in_pars):
+    #yin is the new fluxfit
+    fin, ain, bin = in_pars
+    inject_vec = np.array([0.0, ain, bin])   
+
+    xin = integral_design_matrix(ts, 2 * np.pi * fin, T)
+    yin = ys + xin @ inject_vec  
+    
+    return yin 
 def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, inject_amp = 0.01, max_peaks = 24, chi2threshold = 100):
     start = time.time()
     output_dir = os.path.join("testing", f"{kicID}")
@@ -983,15 +930,16 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
     a_early, a_late, b_early, b_late = check_coherence(t_fit, flux_fit, weight_fit, final_freqs, exptime)
     rate_of_phase, rate_of_amp = change_in_phase_and_amp(a_early, a_late, b_early, b_late, t_fit) #half
     all, half, quartiles, eighths = coherence_all(t_fit, flux_fit, weight_fit, final_freqs, exptime)
-    amp_change, phase_change, sigma_lnA, sigma_phi4, sigma_phij = sampling_stats(all, quartiles, eighths)
-    
+    amp_change2, phase_change2, amp_change4, phase_change4, sigma_lnA, sigma_phi4, sigma_phij = sampling_stats(all, half, quartiles, eighths, t_fit)
+
+
     #15 point graph plotting
     if plots:
         fig, axes = plt.subplots(3, 4, figsize=(16, 9))
         plt.suptitle(f"15 Point figure of {kicID}", fontsize = 18)
         
-        for idx, (ax, points1, points2, points3, points4, p1, p2, p3, p4) in enumerate(zip(axes.flat, all, half, quartiles, eighths, rate_of_phase, 
-                                                                                           sigma_phi4, sigma_phij, phase_change)):
+        for idx, (ax, points1, points2, points3, points4, p1, p2, p3, p4) in enumerate(zip(axes.flat, all, half, quartiles, eighths, phase_change2, 
+                                                                                           sigma_phi4, sigma_phij, phase_change4)):
             if (np.isnan(points1).any() or np.isnan(points2).any() or np.isnan(points3).any() or np.isnan(points4).any()):                
                 ax.set_visible(False)
                 continue
