@@ -25,61 +25,45 @@ def get_kepler_data(kic_id, exptime='long'):
     """
     ## Inputs:
     `kic_id`: Kepler ID (str)
-    `exptime`: desired exposure time string (default `'long'`), e.g., `'long'` or `'short'`
+    `exptime`: default exposure time, 'long'
 
     ## Outputs:
     Returns a 4-tuple:
-    - `lc`: stitched Lightkurve LightCurve object (or None if failed)
+    - `lc`: stitched Lightkurve LightCurve object (or nan if failed)
     - `delta_f`: frequency resolution, 1 / total observation time
     - `sampling_time`: median time between observations (in days)
     - `exptime`:  exposure time in days (from global `lc_exptime` or `sc_exptime`)
 
     ## Bugs:
-    - Depends on external globals: `lc_exptime`, `sc_exptime` 
-    - Fails silently when no data found (returns `None` tuple but doesn't raise)
+    - Depends on global vals: `lc_exptime`, `sc_exptime` 
+    - Fails silently when no data found
     - Rejects light curves where any `dt < 0.9 * median(dt)` — may be too strict
-    - No handling of NaNs, gaps, or outliers in flux or time
     - Assumes time sampling regularity based on hardcoded magic thresholds
     """
-     
     search_result = lk.search_lightcurve(kic_id, mission = 'Kepler', exptime=exptime)
     
-
     if len(search_result) < 1:
-        print(f"nana.star(): no results for {kic_id} at this cadence")
+        print(f"get_kepler_data(): no results for {kic_id} at this cadence")
         return np.nan, np.nan, np.nan, np.nan
 
     try:
         lc_collection = search_result.download_all()
     
-    except LightkurveError as e:
-        print(f"LightkurveError for {kic_id}: {e}")
-
-        try:
-            path = str(e).split("\n")[1].strip()  # extract path from error message
-            if os.path.exists(path):
-                os.remove(path)
-                print(f"Deleted corrupt file: {path}")
-                # Retry download once
-                lc_collection = search_result.download_all()
-                lc = lc_collection.stitch()
-            else:
-                print(f"Path not found: {path}")
-                return np.nan, np.nan, np.nan, np.nan
-        except Exception as delete_error:
-            print(f"Retry failed for {kic_id}: {delete_error}")
-            return np.nan, np.nan, np.nan, np.nan
+    except LightkurveError:
+        print(f"LightkurveError for {kic_id}: get_kepler_data(): search_result.download_all() failed for {kic_id}")
+        return np.nan, np.nan, np.nan, np.nan
     
     lc = lc_collection.stitch()
-    time_val, flux = reorder_inputs(lc.time.value, lc.flux.value)
+    if check_inputs(lc.time.value) is False:
+        time_val, __ = reorder_inputs(lc.time.value, lc.flux.value)
+    else:
+        time_val, __ = lc.time.value, lc.flux.value
 
     if not np.all(np.diff(time_val) > 0):
         print("nana.star(): times not in order")
         #raise ValueError("Times are not in order")
     delta_f = (1/(time_val[-1] - time_val[0]))
     sampling_time= np.median(np.diff(time_val))
-    
-
 
     if not np.all(np.diff(time_val) > 0.90 * sampling_time): #magic
         print("nana.star(): some time intervals out of spec")
@@ -101,25 +85,21 @@ def get_kepler_data(kic_id, exptime='long'):
 def check_inputs(xs):
     """
     ## Inputs:
-    `xs`: list or numpy array of values (typically time values)
+    `xs`: list of lc time values (numpy array)
 
     ## Outputs:
-    `bool`: `True` if the array is sorted in ascending order, `False` otherwise
-
-    ## Bugs:
-    - Prints an error message but doesn't raise an exception when input is unsorted
+    `bool`: `True` if the array is sorted, `False` otherwise
     """
     for i in range(len(xs) - 1):
         if xs[i] > xs[i + 1]:
-            print("check_inputs(): input xs is badly ordered. Use reorder_inputs to reorder")
             return False
     return True
 
 def reorder_inputs(xs, ys):
     """
     ## Inputs:
-    `xs`: numpy array of x-axis values  
-    `ys`: numpy array of y-axis values 
+    `xs`: lc time values (numpy array)  
+    `ys`: lc flux values (numpy array)
 
     ## Outputs:
     A tuple `(xs_sorted, ys_sorted)` where:
@@ -128,7 +108,6 @@ def reorder_inputs(xs, ys):
 
     ## Bugs:
     - Assumes `xs` and `ys` are NumPy arrays
-    - No error handling for NaNs or non-numeric values
     - Raises a ValueError if `xs` and `ys` have different lengths
     """
     if len(xs) != len(ys):
@@ -140,7 +119,7 @@ def reorder_inputs(xs, ys):
 def design_matrix(xlist):
     """
     ## Inputs:
-    `xlist`: numpy array of length 3
+    `xlist`: numpy array of length 3 for the three frequency points (middle and two neighbors)
 
     ## Outputs:
     A 3x3 design matrix:
@@ -149,13 +128,11 @@ def design_matrix(xlist):
     - Column 3: quadratic term with 0.5 factor (`0.5 * xlist**2`)
 
     ## Bugs:
-    - Assumes `xlist` is a NumPy array (will raise if not)
     - Assumes `xlist` has length 3 
     - Assumes `xlist` is ordered
 
     ## Notes:
     - Includes a 0.5 factor that Hogg likes in the quadratic term 
-    - Raises a `TypeError` if input is not a NumPy array
     """
     return (np.vstack((xlist**0, xlist**1, 0.5 * xlist**2))).T
 
@@ -163,8 +140,8 @@ def fit_parabola(xs, ys, index):
     
     """
     ## Inputs:
-    `xs`: numpy array of x values  
-    `ys`: numpy array of y values (same length as `xs`)  
+    `xs`: numpy array of frequency values
+    `ys`: numpy array of power values 
     `index`: integer index of the central point to fit around
 
     ## Outputs:
@@ -172,21 +149,18 @@ def fit_parabola(xs, ys, index):
 
     ## Bugs:
     - `xs` and `ys` must be numpy arrays
-    - Index must not be 0 or `len(xs) - 1`; otherwise slice will be out of bounds
-    - Assumes `xs` is ordered
+    - Index must not be 0 or `len(xs) - 1`; otherwise will be out of bounds
     """
+    index = int(index)  # 🔥 THIS FIXES THE ERROR
     if index < 1 or index > len(xs) - 2:
         raise IndexError("fit_parabola(): index must be between 1 and len(xs) - 2")
-
-    
-
     return np.linalg.solve(design_matrix(xs[index-1:index+2]), ys[index-1:index+2])
 
 def refine_peak(xs, ys, index):
     """
     ## Inputs:
-    `xs`: numpy array of x values (frequencies)  
-    `ys`: numpy array of y values (power)  
+    `xs`: numpy array of frequency values 
+    `ys`: numpy array of power values
     `index`: integer index of peak to refine
 
     ## Outputs:
@@ -206,12 +180,11 @@ def refine_peak(xs, ys, index):
     return x_peak, y_peak, q
 
 def refine_peaks(xs, ys, indices):
-    
     """
     ## Inputs:
-    `xs`: numpy array of x values  
-    `ys`: numpy array of y values (same length as `xs`)  
-    `indices`: numpy array of peak indices
+    `xs`: numpy array of frequency values
+    `ys`: numpy array of power values
+    `indices`: numpy array of frequency peak indices
 
     ## Outputs:
     Three NumPy arrays:
@@ -220,31 +193,24 @@ def refine_peaks(xs, ys, indices):
     - `second_derivatives`: curvature values (second derivative q for each peak)
 
     ## Bugs:
-    - Assumes all `indices` are valid (i.e., between 1 and len(xs) - 2)
+    - Assumes all `indices` are valid (i.e., between 1 and len(xs) - 2) 
     - Assumes `xs` and `ys` are numpy arrays and ordered
     """
-    #results = list(map(check_refine, indices))
-    # xs_refined, ys_refined, second_derivatives = zip(
-    #     *[(r if r is not None else (None, None, None)) for r in results]
-    # )
-
-    #foo = lambda i: refine_peak(xs, ys, i)
-    #xs_refined, ys_refined, second_derivatives = zip(*map(foo, indices))
-
     n = len(indices)
     xs_refined = np.full(n, np.nan)
     ys_refined = np.full(n, np.nan)
     second_derivatives = np.full(n, np.nan)
-
+    
     for j, i in enumerate(indices):
-        result = check_refine(xs, ys, i)
-        if isinstance(result, tuple) and len(result) == 3:
+        if np.isnan(i):
+            continue
+        else:
+            result = refine_peak(xs, ys, i)
             x_r, y_r, q_r = result
             xs_refined[j] = x_r
             ys_refined[j] = y_r
             second_derivatives[j] = q_r
-
-    
+            
     return np.array(xs_refined), np.array(ys_refined), np.array(second_derivatives)
 
 def check_refine(xs, ys, i):
@@ -256,7 +222,6 @@ def check_refine(xs, ys, i):
 
 
 def folding_freq(delta_f, fs, ps, sampling_time, makeplots=False):
-    start = time.time()
     """
     ## Inputs:
     `delta_f`: frequency resolution
@@ -299,7 +264,6 @@ def folding_freq(delta_f, fs, ps, sampling_time, makeplots=False):
         plt.title(f"Refined folding frequency: {fc:0.5f}")
         plt.show()
 
-    print("folding_freq() took", time.time() - start, "seconds")
     return fc
 
 def find_min_and_refine(xs, ys):
@@ -335,7 +299,6 @@ def find_min_and_refine(xs, ys):
     return refined_x[0], refined_y[0]
 
 def get_filtered_peaks(num_of_peaks, xs, ys):
-    start = time.time()
     """
     ## Inputs:
     `num_of_peaks`: number of peaks to return  
@@ -353,6 +316,8 @@ def get_filtered_peaks(num_of_peaks, xs, ys):
     - uses append
     """
     indxs, _ = find_peaks(ys)
+
+    print(len(indxs), "peaks found in get_filtered_peaks()")
     if len(indxs) == 0:
         raise ValueError("get_filtered_peaks(): no peaks found in `ys`")
     
@@ -370,7 +335,6 @@ def get_filtered_peaks(num_of_peaks, xs, ys):
 
     while len(filtered) < num_of_peaks:
         filtered.append(np.nan)
-    print("get_filtered_peaks() took", time.time() - start, "seconds")
     return np.array(filtered)
 
 
@@ -564,7 +528,6 @@ def region_and_freq(indices, folding_freq, f_min, unrefined_freq, unrefined_powe
     return regions, best_freqs, best_chi2s
 
 def check_coherence(ts, ys, weights, final_freq, T):
-    start = time.time()
     """
     ## Inputs:
     `ts`: numpy array of time values  
@@ -612,14 +575,12 @@ def check_coherence(ts, ys, weights, final_freq, T):
         a_late[inx] = pars_late[1]
         b_late[inx] = pars_late[2]
 
-    print("check_coherence() took", time.time() - start, "seconds")
     return a_early, a_late, b_early, b_late
 
 # def safe_arr(arr):
 #     return [np.nan if v is None else v for v in arr]
 
 def change_in_phase_and_amp(a_early, a_late, b_early, b_late, ts):
-    start = time.time()
     """
     ## Inputs:
     `a_early`, `a_late`, `b_early`, `b_late`: NumPy arrays of sine and cosine amplitudes  
@@ -660,7 +621,6 @@ def change_in_phase_and_amp(a_early, a_late, b_early, b_late, ts):
 
         rates_of_phases[i] = (1 / delta_t) * (cross_z / dot_r)
         rates_of_amps[i]   = (1 / delta_t) * (np.dot(delta_r, vector_r) / dot_r)
-    print("change_in_phase_and_amp() took", time.time() - start, "seconds")
     return rates_of_phases, rates_of_amps
 
 
@@ -805,7 +765,6 @@ def splitting(ts, K, jackknife = True):
 
 ###FINAL COHERENCE TEST!!!!
 def coherence_all(ts, ys, weights, final_freq, T):
-    start = time.time()
 
     N = len(final_freq)
     #oms = np.array([f * 2 * np.pi for f in final_freq])
@@ -837,12 +796,10 @@ def coherence_all(ts, ys, weights, final_freq, T):
                 pars, _ = weighted_least_squares_new(A, ys[mask], weights[mask])
                 result[idx][i][0] = pars[1] #a
                 result[idx][i][1] = pars[2] #b
-    print("coherence_all() took", time.time() - start, "seconds")
     return all, results[0], results[1], results[2] #all, half, quarter, eighth (+jacknives)
 
 
 def sampling_stats(alls, quartiles, eighths):
-    start = time.time()
 
     f_num = len(alls)
     
@@ -888,19 +845,24 @@ def sampling_stats(alls, quartiles, eighths):
         sigma_phi4[inx] = varphi4
         sigma_phij[inx] = varphij 
         
-    print("sampling_stats() took", time.time() - start, "seconds")
     return amp_change, phase_change, sigma_lnA, sigma_phi4, sigma_phij
 
 def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, inject_amp = 0.01, max_peaks = 24, chi2threshold = 100):
     start = time.time()
+    output_dir = os.path.join("testing", f"{kicID}")
+    os.makedirs(output_dir, exist_ok=True)
+
     #get the lightcurve
     kicID = "KIC" + str(kicID).lstrip("0") 
     lc, delta_f, sampling_time, exptime = get_kepler_data(kicID)
+
+    if np.isnan(delta_f):
+        print(f"Skipping {kicID} because get_kepler_data() returned nans")
+        return None
+    
     t_fit, flux_fit, weight_fit = mask_vals(lc) 
 
-    if None in [lc]:
-        print(f"Skipping {kicID} because get_kepler_data() returned None")
-        return None
+    
 
     #set frequency variables  
     over_sampling  = 3 #oversample by a factor of 3
@@ -1097,13 +1059,8 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
     #save to csv
     if save:
         date_str = datetime.now().strftime("%Y-%m-%d") 
-        output_dir = os.path.join("cool_kics_from_100", f"{date_str}_{kicID}")
-        os.makedirs(output_dir, exist_ok=True)
 
-        
         data = Table()
-    
-    
         data['Freqs'] = (final_freqs)
         data['Regions'] = (regions)
         data['Freq in region A'] = (refined_freq)
