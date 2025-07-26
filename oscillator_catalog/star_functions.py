@@ -901,12 +901,31 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
         print(f"No high chi2s modes in {kicID}")
         #print(delta_chi2s, "delta_chi2s")
         return None
+    
+    print(f"delta_chi2s for {kicID}:", delta_chi2s)
+
+    
+
+    
+
+    
 
     
     sharpnesses = sharpness(second_derivatives, refined_power)
     all, half, quartiles, eighths = check_coherence(t_fit, flux_fit, weight_fit, final_freqs, exptime)
     amp_change2, phase_change2, amp_change4, phase_change4, sigma_lnA, sigma_phi4, sigma_phij = sampling_stats(all, half, quartiles, eighths, t_fit)
 
+    invalid_indices = np.zeros(len(delta_chi2s))
+
+    for i, delta in enumerate(delta_chi2s):
+        if delta > chi2threshold:
+            invalid_indices[i] = np.nan
+        else:
+            invalid_indices[i] = i
+            
+            
+            
+    print("invalid indices:", invalid_indices)
 
     #15 point graph plotting
     if plots:
@@ -998,6 +1017,7 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
         #data['Sigma lnA(4)'] = safe_arr(sigma_lnA)
         data['Sigma phi(4)'] = (sigma_phi4)
         data['Sigma phi(jack)'] = (sigma_phij)
+        data['Invalid indices'] = (invalid_indices)
         
         if inject:
             ascii.write(
@@ -1033,7 +1053,8 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
                 #"Change of lnA(2)": "{:.7e}",
                 #"Sigma lnA(4)": "{:.7e}",
                 "Sigma phi(4)": "{:.7e}",
-                "Sigma phi(jack)" : "{:.7e}"
+                "Sigma phi(jack)" : "{:.7e}",
+                "Invalid indices": "{:.7e}"  
             }
             )
     
