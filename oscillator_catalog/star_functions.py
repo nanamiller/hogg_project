@@ -2,8 +2,6 @@ from scipy.signal import find_peaks
 import lightkurve as lk
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.signal import find_peaks
-import scipy.signal
 from astropy import units as u
 from scipy.interpolate import CubicSpline
 from datetime import datetime
@@ -13,7 +11,7 @@ from astropy.io import ascii
 from lightkurve import LightCurve
 from lightkurve import LightkurveError
 import time
-from numba import njit
+from scipy.ndimage import median_filter
 
 f_avoid = 3.5 / 372.5
 lc_exptime = (29.4) / (60 * 24) #days, see Kepler Data Processing Handbook, Section 3.1
@@ -81,6 +79,37 @@ def get_kepler_data(kic_id, exptime='long'):
     print("nana.get_kepler_data() took", time.time() - start, "seconds")
     return lc, delta_f, sampling_time, exptime
 
+def mask_vals(lc):
+    """
+    Remove mask values from a Lightkurve LightCurve object and return valid time, flux, and weight arrays.
+
+    ## Inputs:
+    `lc`: Lightkurve LightCurve object:
+    - `
+
+    ## Outputs:
+    3 NumPy arrays:
+    - `t_fit`: time values with valid (finite) data
+    - `flux_fit`: corresponding flux values
+    - `weight_fit`: corresponding weights (1 / sigma^2)
+
+    ## Bugs:
+    - not obvious that we need this function
+    """
+    #replaces masked values with NaN
+    #print(type(lc.flux)) --> confirmed that lc.flux is a MaskedArray
+    t_clean = np.ma.filled(lc.time.value, np.nan)
+    flux_clean = np.ma.filled(lc.flux.value, np.nan)
+    sigma_clean = np.ma.filled(lc.flux_err.value, np.nan)
+
+    #gets rid of NaNs, creates mask with only finite/valid values
+    mask = np.isfinite(t_clean) & np.isfinite(flux_clean) & np.isfinite(sigma_clean)
+    t_fit = t_clean[mask]
+    flux_fit = flux_clean[mask]
+    sigma_fit = sigma_clean[mask]
+    weight_fit = 1 / sigma_fit**2
+
+    return t_fit, flux_fit, weight_fit
 
 def check_inputs(xs):
     """
@@ -129,8 +158,6 @@ def get_periodogram(f_min, f_max, df, lc):
 
     ## Bugs:
     - Assumes `f_min` > 0 and `f_max` > `f_min`
-    - No check for empty frequency grid if range is too small
-    - Assumes `lc.to_periodogram()` succeeds without errors
     """
     
     frequency_grid = np.arange(f_min, f_max, df) / u.day
@@ -178,7 +205,7 @@ def fit_parabola(xs, ys, index):
     - `xs` and `ys` must be numpy arrays
     - Index must not be 0 or `len(xs) - 1`; otherwise will be out of bounds
     """
-    index = int(index)  # 🔥 THIS FIXES THE ERROR
+    #index = int(index)
     if index < 1 or index > len(xs) - 2:
         raise IndexError("fit_parabola(): index must be between 1 and len(xs) - 2")
     return np.linalg.solve(design_matrix(xs[index-1:index+2]), ys[index-1:index+2])
@@ -240,7 +267,7 @@ def refine_peaks(xs, ys, indices):
             
     return np.array(xs_refined), np.array(ys_refined), np.array(second_derivatives)
 
-def get_filtered_peaks(num_of_peaks, xs, ys):
+def get_filtered_peaks(num_of_peaks, xs, ys, median_window = None, median_factor = 10.):
     """
     ## Inputs:
     `num_of_peaks`: number of peaks to return  
@@ -256,7 +283,7 @@ def get_filtered_peaks(num_of_peaks, xs, ys):
     - Assumes `xs` is ordered and evenly spaced
     - No NaN handling in `ys`
     - uses append
-    """
+    """ 
     indxs, _ = find_peaks(ys)
     filtered = []
 
@@ -265,6 +292,11 @@ def get_filtered_peaks(num_of_peaks, xs, ys):
     
     indices = indxs[np.argsort(-ys[indxs])]
 
+    if median_window is not None:
+        y_medians = median_filter(ys, size=median_window)
+        too_short = ys(indices) < median_factor * y_medians[indices]
+        indices = np.delete(indices, too_short)
+       
     if (len(indices) < num_of_peaks):
         print(f"get_filtered_peaks(): fewer than {num_of_peaks} peaks found, will return nan for missing peaks")
 
@@ -481,96 +513,6 @@ def region_and_freq(indices, folding_freq, f_min, unrefined_freq, unrefined_powe
 
     return regions, best_freqs, best_chi2s
 
-def check_coherence(ts, ys, weights, final_freq, T):
-    """
-    ## Inputs:
-    `ts`: numpy array of time values  
-    `ys`: numpy array of signal values (flux)  
-    `weights`: numpy array of weights  
-    `final_freq`: numpy array of refined frequencies 
-    `T`: exposure time 
-
-    ## Outputs:
-    Four NumPy arrays:
-    - `a_early`: sine amplitudes before the median time  
-    - `a_late`: sine amplitudes after the median time  
-    - `b_early`: cosine amplitudes before the median time  
-    - `b_late`: cosine amplitudes after the median time
-
-    ## Bugs:
-    - Assumes `ts`, `ys`, and `weights` are NumPy arrays of the same length
-    - Assumes design matrix and fit always succeed on each slice
-    - Assumes data can be cleanly split at the median time
-    """
-    N = len(final_freq)
-    a_early = np.full(N, np.nan)
-    a_late  = np.full(N, np.nan)
-    b_early = np.full(N, np.nan)
-    b_late  = np.full(N, np.nan)
-
-    ts_median = np.median(ts)
-    I_early = ts < ts_median
-    I_late  = ts > ts_median
-
-    for inx, f in enumerate(final_freq):
-
-        if isinstance(f, float) and np.isnan(f):
-            continue
-        
-        om = 2 * np.pi * f
-
-        A_early = integral_design_matrix(ts[I_early], om, T)
-        pars_early = weighted_least_squares(A_early, ys[I_early], weights[I_early])
-        a_early[inx] = pars_early[1]
-        b_early[inx] = pars_early[2]
-
-        A_late = integral_design_matrix(ts[I_late], om, T)
-        pars_late = weighted_least_squares(A_late, ys[I_late], weights[I_late])
-        a_late[inx] = pars_late[1]
-        b_late[inx] = pars_late[2]
-
-    return a_early, a_late, b_early, b_late
-
-def change_in_phase_and_amp(a_early, a_late, b_early, b_late, ts):
-    """
-    ## Inputs:
-    `a_early`, `a_late`, `b_early`, `b_late`: NumPy arrays of sine and cosine amplitudes  
-    `ts`: NumPy array of time values
-
-    ## Outputs:
-    Two NumPy arrays:
-    - `rates_of_phases`: estimated rate of phase change  
-    - `rates_of_amps`: estimated rate of amplitude change
-
-    ## Bugs:
-    - Assumes all input arrays are the same length
-    - Assumes clean median split in time
-    """
-    N = len(a_early)
-    rates_of_phases = np.full(N, np.nan)
-    rates_of_amps   = np.full(N, np.nan)
-
-    ts_median = np.median(ts)
-    delta_t = np.median(ts[ts > ts_median]) - np.median(ts[ts < ts_median])
-
-    for i in range(N):
-        a1, a2 = a_early[i], a_late[i]
-        b1, b2 = b_early[i], b_late[i]
-        
-        # Skip if any value is nan
-        if any(np.isnan([a1, a2, b1, b2])):
-            continue
-
-        delta_r = [a2 - a1, b2 - b1]
-        vector_r = [0.5 * (a2 + a1), 0.5 * (b2 + b1)]
-        cross_z = delta_r[0] * vector_r[1] - delta_r[1] * vector_r[0]
-        dot_r = np.dot(vector_r, vector_r)
-
-        rates_of_phases[i] = (1 / delta_t) * (cross_z / dot_r)
-        rates_of_amps[i]   = (1 / delta_t) * (np.dot(delta_r, vector_r) / dot_r)
-    return rates_of_phases, rates_of_amps
-
-
 def sharpness(second_derivatives, y_news):
     """
     ## Inputs:
@@ -618,39 +560,6 @@ def null_chi_squared(ys, weights):
     null_chisq = np.sum(weights * (ys - a0) ** 2)
     return np.array(null_chisq)
 
-def mask_vals(lc):
-    """
-    ## Inputs:
-    `lc`: Lightkurve LightCurve object containing:
-    - `lc.time.value`: time values (days)
-    - `lc.flux.value`: flux values
-    - `lc.flux_err.value`: flux uncertainties
-
-    ## Outputs:
-    3 NumPy arrays:
-    - `t_fit`: time values with valid (finite) data
-    - `flux_fit`: corresponding flux values
-    - `weight_fit`: corresponding weights (1 / sigma^2)
-
-    ## Bugs:
-    - not obvious that we need this function
-    - Assumes `lc.time`, `lc.flux`, and `lc.flux_err` exist and have `.value` attributes
-    - No check for zero or negative `flux_err` (could produce invalid weights)
-    - Assumes all arrays are 1D and compatible in shape
-    """
-
-    t_clean = np.ma.filled(lc.time.value, np.nan)
-    flux_clean = np.ma.filled(lc.flux.value, np.nan)
-    sigma_clean = np.ma.filled(lc.flux_err.value, np.nan)
-    mask = np.isfinite(t_clean) & np.isfinite(flux_clean) & np.isfinite(sigma_clean)
-
-    t_fit = t_clean[mask]
-    flux_fit = flux_clean[mask]
-    sigma_fit = sigma_clean[mask]
-    weight_fit = 1 / sigma_fit**2
-
-    return t_fit, flux_fit, weight_fit
-
 def splitting(ts, K, jackknife = True):
     '''
     # splitting()
@@ -680,9 +589,21 @@ def splitting(ts, K, jackknife = True):
             masks[i, idx] = True # add subsample
     return masks
 
-###FINAL COHERENCE TEST!!!!
-def coherence_all(ts, ys, weights, final_freq, T):
+def check_coherence(ts, ys, weights, final_freq, T):
+    '''
+    ## Inputs:
+    - `ts`: time values 
+    - `ys`: flux values 
+    - `weights`: weights for the observations 
+    - `final_freq`: final frequencies to check coherence for 
+    - `T`: exposure time 
 
+    ## Outputs:
+   - `all`: shape `(N, 2)` array of a,b pars fit over full data
+    - `half`: shape `(N, 2, 2)` a,b pars fits over halves
+    - `quarter`: shape `(N, 4, 2)` a,b pars fits over quarters
+    - `eighth`: shape `(N, 8, 2)` a,b pars fits over eighths +(jackknife)
+    '''
     N = len(final_freq)
     all = np.full((N, 2), np.nan)
         
@@ -717,6 +638,30 @@ def coherence_all(ts, ys, weights, final_freq, T):
 
 
 def sampling_stats(alls, halves, quartiles, eighths, ts):
+    '''
+    sampling_stats():
+    Calculate  statistics on oscillation amplitude and phase
+    ## Inputs:
+    - `all`: shape `(N, 2)` array of a,b pars fit over full data
+    - `half`: shape `(N, 2, 2)` a,b pars fits over halves
+    - `quarter`: shape `(N, 4, 2)` a,b pars fits over quarters
+    - `eighth`: shape `(N, 8, 2)` a,b pars fits over eighths +(jackknife)
+    - `ts`: time values
+
+    ## Outputs:
+    - `amp_change2`:  array of log-amplitude change rates from halves
+    - `phase_change2`: array of phase change rates from halves
+    - `amp_change4`: (N, 4)` relative log amplitude changes from quartiles
+    - `phase_change4`: (N, 4)` relative phase shifts from quartiles
+    - `sigma_lnA4`:  array of ln-amplitude across quartiles (1/2 RMS)
+    - `sigma_phi4`:  array of phase across quartiles (1/2 RMS)
+    - `sigma_phij`:  array of phase from jackknife eighths (sigma estimate)
+
+    ## Comment:
+    - halves statsitics are calculated from comparison between the first and second halves parameters
+    - quartiles and eighth jacknife stats
+      are calculated from relative shift from the all parameters to the quartile and eighth parameters
+    '''
 
     f_num = len(alls)
     ts_median = np.median(ts)
@@ -781,11 +726,24 @@ def sampling_stats(alls, halves, quartiles, eighths, ts):
         sigma_phi4[inx] = varphi4
         sigma_phij[inx] = varphij 
 
-        
-        
     return amp_change2, phase_change2, amp_change4, phase_change4, sigma_lnA4, sigma_phi4, sigma_phij
 
 def inject_one_mode(ts, ys, T, in_pars):
+    '''
+    # inject_one_mode()
+    adds a mode
+
+    ## Inputs:
+    - `ts`: array of time values
+    - `ys`: array of flux values (original signal)
+    - `T`:  exposure time 
+    - `in_pars`: tuple `(f, a, b)`:
+        - `f`: frequency to inject 
+        - `a`, `b`: cosine and sine pars
+
+    ## Output:
+    - `yin`: `(N,)` array of modified flux values with injected mode
+    '''
     #yin is the new fluxfit
     fin, ain, bin = in_pars
     inject_vec = np.array([0.0, ain, bin])   
@@ -794,7 +752,14 @@ def inject_one_mode(ts, ys, T, in_pars):
     yin = ys + xin @ inject_vec  
     
     return yin 
-def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, inject_amp = 0.01, max_peaks = 24, chi2threshold = 100):
+
+def RunningMedian(x, N):
+    return median_filter(x, N)
+
+    #return np.array([np.median(c) for c in b])  # This also works
+
+
+def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, inject_amp = 0.01, max_peaks = 100, chi2threshold = 100):
     start = time.time()
     output_dir = os.path.join("testing", f"{kicID}")
     os.makedirs(output_dir, exist_ok=True)
@@ -809,11 +774,10 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
     
     t_fit, flux_fit, weight_fit = mask_vals(lc) 
 
-    
-
     #set frequency variables  
     over_sampling  = 3 #oversample by a factor of 3
-    df, f_maxC, f_min = delta_f/over_sampling, (3 / (2*sampling_time)), 0.5 # magic number
+    df, f_maxC = delta_f/over_sampling, (3 / (2*sampling_time))
+    f_min = 0.5 # magic number
     
     #if injecting, inject now
     inject = False
@@ -851,11 +815,16 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
     fc = folding_freq(delta_f, freq_full, power_full, sampling_time, False)
     fb = 0.5 * fc
     freq_mini, power_mini = get_periodogram(f_min, fb, df, lc)
+
+    RunningMedian_power = RunningMedian(power_mini, 31)
+    print(f"Running median of mini periodogram: {RunningMedian_power}")
+
     
     #mini periodogram plotting
-    #mini periodogram
     if plots:
         plt.plot(freq_mini, power_mini, 'k.')
+        plt.plot(freq_mini, RunningMedian_power, 'r-', label='Running Median')
+        plt.axvline(0.5, color = 'red')
         plt.xlabel("Frequency (1/day)")
         plt.ylabel("Power")
         if inject:
@@ -870,8 +839,10 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
             plt.show()
         #log mini periodogram
         plt.plot(freq_mini, power_mini, 'k.')
+        plt.plot(freq_mini, RunningMedian_power, 'r-', label='Running Median')
         plt.xlabel("Frequency (1/day)")
         plt.ylabel("Log Power")
+        plt.axvline(0.5, color = 'red')
         plt.semilogy()
         if inject:
             plt.title(f"Log Mini Injected Periodogram of {kicID}")
@@ -891,10 +862,11 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
     
     #find frequency and corresponding regions
     regions, final_freqs, chi2s = region_and_freq(indices, fc, df, freq_mini, power_mini, t_fit, flux_fit, weight_fit, exptime)
+    good = ~np.isnan(final_freqs)
+    regions, final_freqs, chi2s = regions[good], final_freqs[good], chi2s[good]
 
     #full periodogram plotting (requires final_freqs)
     if plots:
-        #full periodogram
         plt.plot(freq_full, power_full, 'k.')
         valid_points = [(f, p) for f, p in zip(final_freqs, refined_power) if not np.isnan(f) and not np.isnan(p)]
         if valid_points:
@@ -927,9 +899,7 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
 
     
     sharpnesses = sharpness(second_derivatives, refined_power)
-    a_early, a_late, b_early, b_late = check_coherence(t_fit, flux_fit, weight_fit, final_freqs, exptime)
-    rate_of_phase, rate_of_amp = change_in_phase_and_amp(a_early, a_late, b_early, b_late, t_fit) #half
-    all, half, quartiles, eighths = coherence_all(t_fit, flux_fit, weight_fit, final_freqs, exptime)
+    all, half, quartiles, eighths = check_coherence(t_fit, flux_fit, weight_fit, final_freqs, exptime)
     amp_change2, phase_change2, amp_change4, phase_change4, sigma_lnA, sigma_phi4, sigma_phij = sampling_stats(all, half, quartiles, eighths, t_fit)
 
 
@@ -1003,7 +973,9 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
             plt.show()
         plt.close(fig)
         
-
+    print("find_modes_in_star() finished processing star", kicID)
+    print("Found modes length:", len(final_freqs))
+    print("Final frequencies:", final_freqs)
     #save to csv
     if save:
         date_str = datetime.now().strftime("%Y-%m-%d") 
