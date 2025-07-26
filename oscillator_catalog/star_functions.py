@@ -759,11 +759,12 @@ def RunningMedian(x, N):
     #return np.array([np.median(c) for c in b])  # This also works
 
 
-def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, inject_amp = 0.01, max_peaks = 100, chi2threshold = 100):
+def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, inject_amp = 0.01, max_peaks = 24, chi2threshold = 100):
     start = time.time()
-    output_dir = os.path.join("testing", f"{kicID}")
-    os.makedirs(output_dir, exist_ok=True)
-
+    #output_dir = os.path.join("testing", f"{kicID}")
+    #os.makedirs(output_dir, exist_ok=True)
+    kic_array = np.ones(max_peaks) * kicID
+    
     #get the lightcurve
     kicID = "KIC" + str(kicID).lstrip("0") 
     lc, delta_f, sampling_time, exptime = get_kepler_data(kicID)
@@ -798,7 +799,8 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
             plt.ylabel("Flux")
             plt.title(f"Injected Lightcurve of {kicID}")
             if save:
-                plt.savefig(os.path.join(output_dir, f"{kicID}_injected_lightcurve.png"))
+                #plt.savefig(os.path.join(output_dir, f"{kicID}_injected_lightcurve.png"))
+                plt.savefig(f"{kicID}_injected_lightcurve.png")
             plt.show()
 
         else:
@@ -807,7 +809,8 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
             plt.ylabel("Flux")
             plt.title(f"Lightcurve of {kicID}")
             if save:
-                plt.savefig(os.path.join(output_dir, f"{kicID}_lightcurve.png"))
+                #plt.savefig(os.path.join(output_dir, f"{kicID}_lightcurve.png"))
+                plt.savefig(f"{kicID}_lightcurve.png")
             plt.show()
 
     #get periodograms in regions A, B, and C
@@ -817,42 +820,43 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
     freq_mini, power_mini = get_periodogram(f_min, fb, df, lc)
 
     RunningMedian_power = RunningMedian(power_mini, 31)
-    print(f"Running median of mini periodogram: {RunningMedian_power}")
-
     
     #mini periodogram plotting
     if plots:
         plt.plot(freq_mini, power_mini, 'k.')
         plt.plot(freq_mini, RunningMedian_power, 'r-', label='Running Median')
-        plt.axvline(0.5, color = 'red')
+        #plt.axvline(0.5, color = 'red')
         plt.xlabel("Frequency (1/day)")
         plt.ylabel("Power")
         if inject:
             plt.title(f"Mini Injected Periodogram of {kicID}")
             if save:
-                plt.savefig(os.path.join(output_dir, f"{kicID}_injected_miniperio.png"))
+                #plt.savefig(os.path.join(output_dir, f"{kicID}_injected_miniperio.png"))
+                plt.savefig(f"{kicID}_injected_miniperio.png")
             plt.show()
         else:
             plt.title(f"Mini Periodogram of {kicID}")
             if save:
-                plt.savefig(os.path.join(output_dir, f"{kicID}_miniperio.png"))
+                #plt.savefig(os.path.join(output_dir, f"{kicID}_miniperio.png"))
+                plt.savefig( f"{kicID}_miniperio.png")
             plt.show()
         #log mini periodogram
         plt.plot(freq_mini, power_mini, 'k.')
         plt.plot(freq_mini, RunningMedian_power, 'r-', label='Running Median')
         plt.xlabel("Frequency (1/day)")
         plt.ylabel("Log Power")
-        plt.axvline(0.5, color = 'red')
+        #plt.axvline(0.5, color = 'red')
         plt.semilogy()
         if inject:
             plt.title(f"Log Mini Injected Periodogram of {kicID}")
             if save:
-                plt.savefig(os.path.join(output_dir, f"{kicID}_injected_logminiperio.png"))
+                plt.savefig(f"{kicID}_injected_logminiperio.png")
             plt.show()
         else:
             plt.title(f"Log Mini Periodogram of {kicID}")
             if save:
-                plt.savefig(os.path.join(output_dir, f"{kicID}_logminiperio.png"))
+                #plt.savefig(os.path.join(output_dir, f"{kicID}_logminiperio.png"))
+                plt.savefig(f"{kicID}_logminiperio.png")
             plt.show()
         
 
@@ -880,12 +884,13 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
         if inject:
             plt.title(f"Full Injected Periodogram of {kicID}")
             if save:
-                plt.savefig(os.path.join(output_dir, f"{kicID}_injected_fullperio.png"))
+                plt.savefig(f"{kicID}_injected_fullperio.png")
             plt.show()
         else:
             plt.title(f"Full Periodogram of {kicID}")
             if save:
-                plt.savefig(os.path.join(output_dir, f"{kicID}_fullperio.png"))
+                #plt.savefig(os.path.join(output_dir, f"{kicID}_fullperio.png"))
+                plt.savefig(f"{kicID}_fullperio.png")
             plt.show()
         
         
@@ -965,22 +970,24 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
 
         if inject:
             if save:
-                plt.savefig(os.path.join(output_dir, f"{kicID}_injected_15point.png"))
+                plt.savefig(f"{kicID}_injected_15point.png")
             plt.show()
         else:
             if save:
-                plt.savefig(os.path.join(output_dir, f"{kicID}_15point.png"))
+                #plt.savefig(os.path.join(output_dir, f"{kicID}_15point.png"))
+                plt.savefig(f"{kicID}_15point.png")
             plt.show()
         plt.close(fig)
         
-    print("find_modes_in_star() finished processing star", kicID)
-    print("Found modes length:", len(final_freqs))
-    print("Final frequencies:", final_freqs)
+    #print("find_modes_in_star() finished processing star", kicID)
+    #print("Found modes length:", len(final_freqs))
+    #print("Final frequencies:", final_freqs)
     #save to csv
     if save:
         date_str = datetime.now().strftime("%Y-%m-%d") 
 
         data = Table()
+        data['KIC'] = kic_array
         data['Freqs'] = (final_freqs)
         data['Regions'] = (regions)
         data['Freq in region A'] = (refined_freq)
@@ -1013,7 +1020,7 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
         else:
             ascii.write(
             data,
-            output = os.path.join(output_dir, kicID + '_stats.csv'),
+            kicID + '_stats' + '.csv',
             overwrite=True,
             format="csv",
             formats={
