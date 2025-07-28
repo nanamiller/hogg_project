@@ -820,10 +820,19 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
     freq_mini, power_mini = get_periodogram(f_min, fb, df, lc)
 
     RunningMedian_power = RunningMedian(power_mini, 31)
+    print("Running median power:", RunningMedian_power)
+    print("Running median power length:", len(RunningMedian_power))
+    print("power mini", power_mini)
+    print("power_mini length:", len(power_mini))
+
+    plt.plot(freq_mini, power_mini/RunningMedian_power, 'k-')
+    #plt.plot(freq_mini, RunningMedian_power, 'r-', label='Running Median')
+    plt.title(f"Mini Periodogram of {kicID} (normalized by running median)")
+    plt.show()
     
     #mini periodogram plotting
     if plots:
-        plt.plot(freq_mini, power_mini, 'k.')
+        plt.plot(freq_mini, power_mini, 'k')
         plt.plot(freq_mini, RunningMedian_power, 'r-', label='Running Median')
         #plt.axvline(0.5, color = 'red')
         plt.xlabel("Frequency (1/day)")
@@ -861,7 +870,7 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
         
 
     #find and refine periodogram peaks
-    indices = get_filtered_peaks(max_peaks, freq_mini, power_mini)
+    indices = get_filtered_peaks(max_peaks, freq_mini, power_mini/RunningMedian_power)
     refined_freq, refined_power, second_derivatives = refine_peaks(freq_mini, power_mini, indices)
     
     #find frequency and corresponding regions
