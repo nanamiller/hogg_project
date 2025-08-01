@@ -21,6 +21,7 @@ import lightkurve as lk
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy import units as u
+from astropy.table import Table
 from scipy.interpolate import CubicSpline
 from datetime import datetime
 import os
@@ -531,7 +532,15 @@ def region_and_freq(indices, folding_freq, f_min, unrefined_freq, unrefined_powe
             best_chi2s[loc] = chi2s[low_chi_ind]
     print("region_and_freq() took", time.time() - start, "seconds")
 
-    return regions, best_freqs, best_chi2s
+    delta_chi2s =  null_chi_squared(flux_fit, weight_fit) - best_chi2s
+
+    output_table = Table()
+    output_table['frequency'] = best_freqs
+    output_table['region'] = regions
+    output_table['delta chi-squared'] = delta_chi2s
+
+    return output_table
+    #return regions, best_freqs, best_chi2s
 
 def sharpness(second_derivatives, y_news):
     """
@@ -609,7 +618,7 @@ def splitting(ts, K, jackknife = True):
             masks[i, idx] = True # add subsample
     return masks
 
-def check_coherence(ts, ys, weights, final_freq, T):
+def check_coherence(ts, ys, weights, T, output_table):
     '''
     ## Inputs:
     - `ts`: time values 
@@ -624,6 +633,7 @@ def check_coherence(ts, ys, weights, final_freq, T):
     - `quarter`: shape `(N, 4, 2)` a,b pars fits over quarters
     - `eighth`: shape `(N, 8, 2)` a,b pars fits over eighths +(jackknife)
     '''
+    final_freq = output_table["frequency"]
     N = len(final_freq)
     all = np.full((N, 2), np.nan)
         
@@ -657,7 +667,7 @@ def check_coherence(ts, ys, weights, final_freq, T):
     return all, results[0], results[1], results[2] #all, half, quarter, eighth (+jacknives)
 
 
-def sampling_stats(alls, halves, quartiles, eighths, ts):
+def sampling_stats(alls, halves, quartiles, eighths, ts, output_table):
     '''
     sampling_stats():
     Calculate  statistics on oscillation amplitude and phase
@@ -747,8 +757,12 @@ def sampling_stats(alls, halves, quartiles, eighths, ts):
         sigma_phij[inx] = varphij
     
     #make astropy table
+    #print(sigma_phij.shape)
+    output_table.add_columns([sigma_phij,  sigma_phi4, phase_change2, phase_change4], names = ['phase uncertainty jackknife', 'phase uncertainty split', 'phase change for A-B split', 'phase change for quartile split'])
+    print("output table adding columns", output_table)
 
-    return amp_change2, phase_change2, amp_change4, phase_change4, sigma_lnA4, sigma_phi4, sigma_phij
+    #return amp_change2, phase_change2, amp_change4, phase_change4, sigma_lnA4, sigma_phi4, sigma_phij
+    return output_table
 
 def inject_one_mode(ts, ys, T, in_pars):
     '''
@@ -896,18 +910,25 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
     refined_freq, refined_power, second_derivatives = refine_peaks(freq_mini, power_mini, indices)
     
     #find frequencies and corresponding regions
-    regions, final_freqs, chi2s = region_and_freq(indices, fc, df, freq_mini, power_mini, t_fit, flux_fit, weight_fit, exptime) #make the output table
-    #make first output table here!!! singular titles for each column in the table first column (region, frequency, chi-squared)
-    good = ~np.isnan(final_freqs) & (chi2s >= chi2_threshold) #filter out bad regions and low chi2
+    #regions, final_freqs, chi2s = region_and_freq(indices, fc, df, freq_mini, power_mini, t_fit, flux_fit, weight_fit, exptime) #make the output table
+    output_table = region_and_freq(indices, fc, df, freq_mini, power_mini, t_fit, flux_fit, weight_fit, exptime)
+
+    print("first output table", output_table)
+    #print(f"delta_chi2s for {kicID}:", output_table["delta chi-squared"])
+
+
+    good = ~np.isnan(output_table["frequency"]) & (output_table["delta chi-squared"] >= chi2_threshold) #filter out bad regions and low chi2
     if np.sum(good) < 1:
         print(f"No frequencies found in {kicID} with chi2 threshold {chi2_threshold}")
         return None 
-    regions, final_freqs, chi2s = regions[good], final_freqs[good], chi2s[good] #add these values to the table
+    output_table = output_table[good]
+
+    
 
     #full periodogram plotting (requires final_freqs)
     if plots:
         plt.plot(freq_full, power_full, 'k.')
-        for freq in final_freqs:
+        for freq in output_table["frequency"]:
             plt.axvline(freq, color='red', alpha=0.25, lw = 0.5)
         plt.xlabel("Frequency (1/day)")
         plt.ylabel("Power")
@@ -926,31 +947,38 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
                 plt.savefig(f"{kicID}_fullperio.png")
             plt.show()   
         
-    delta_chi2s =  null_chi_squared(flux_fit, weight_fit) - chi2s
-    print(f"delta_chi2s for {kicID}:", delta_chi2s)
-    print("Magic numbers: f_min =", f_min, ", over_sampling =", over_sampling,  "jack knife threshold =", 0.1, ", chi2_threshold =", chi2_threshold)
+    print("Magic numbers: f_min =", f_min, ", over_sampling =", over_sampling,  "jack knife threshold =", phase_uncertainty_threshold, ", chi2_threshold =", chi2_threshold)
     
     #sharpnesses = sharpness(second_derivatives, refined_power)
-    all, half, quartiles, eighths = check_coherence(t_fit, flux_fit, weight_fit, final_freqs, exptime)
-    amp_change2, phase_change2, amp_change4, phase_change4, sigma_lnA, sigma_phi4, sigma_phij = sampling_stats(all, half, quartiles, eighths, t_fit)
-    #here's how this code should work
-    output_table = sampling_stats(all, half, quartiles, eighths, t_fit)
-    output_table['Freq'] = final_freqs
+    all, half, quartiles, eighths = check_coherence(t_fit, flux_fit, weight_fit, exptime, output_table)
+
     
-    output_table = output_table[good]
-    good = (sigma_phij <  phase_uncertainty_threshold)
+
+    output_table = sampling_stats(all, half, quartiles, eighths, t_fit, output_table)
+    #here's how this code should work
+    #print("after sampling stats output table", output_table)
+    
+    
+    
+    good = (output_table['phase uncertainty jackknife'] <  phase_uncertainty_threshold)
     if np.sum(good) < 1:
         print(f"No modes found in {kicID} with phase uncertainty threshold {phase_uncertainty_threshold}")
         return None
     #bug: sampling_stats() should return a table object and this would only be one assignment
-    (amp_change2, phase_change2, amp_change4, phase_change4, 
-     sigma_lnA, sigma_phi4, sigma_phij) = \
-          (amp_change2[good], phase_change2[good], amp_change4[good], phase_change4[good], 
-           sigma_lnA[good], sigma_phi4[good], sigma_phij[good])
+    output_table = output_table[good]
 
+    print("final output table", output_table)
+
+    
 
     #15 point graph plotting
     if plots:
+        phase_change2 = output_table['phase change for A-B split']
+        phase_change4 = output_table['phase change for quartile split']
+        sigma_phi4 = output_table['phase uncertainty split']
+        sigma_phij = output_table['phase uncertainty jackknife']
+        final_freqs = output_table['frequency']
+    
         fig, axes = plt.subplots(3, 4, figsize=(16, 9))
         plt.suptitle(f"15 Point figure of {kicID}", fontsize = 18)
         
