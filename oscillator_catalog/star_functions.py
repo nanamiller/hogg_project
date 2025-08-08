@@ -33,7 +33,7 @@ import time
 from scipy.ndimage import median_filter
 import cProfile
 
-f_avoid = 3.5 / 372.5
+f_avoid = 3.5 / 372.5 #magic number
 lc_exptime = (29.4) / (60 * 24) #days, see Kepler Data Processing Handbook, Section 3.1
 sc_exptime = (58.8) / (60 * 60 * 24) #days, see Kepler Data Processing Handbook, Section 3.1
 
@@ -89,10 +89,12 @@ def get_kepler_data(kic_id, exptime='long'):
         #raise ValueError("some time intervals out of spec")
     
     exptime = np.nan
-    if sampling_time > 0.9 * lc_exptime: 
+    if sampling_time > 0.9 * lc_exptime:  #magic number?
         exptime = lc_exptime
-    if sampling_time < 1.1 * sc_exptime:
+        print(f"{kic_id} is long cadence")
+    if sampling_time < 1.1 * sc_exptime: #also magic number?
         exptime = sc_exptime
+        print(f"{kic_id} is short cadence")
     if exptime is np.nan:
         print("nana.star(): no consistent exptime")
         #raise ValueError("no consistent exptime")
@@ -287,7 +289,7 @@ def refine_peaks(xs, ys, indices):
             
     return np.array(xs_refined), np.array(ys_refined), np.array(second_derivatives)
 
-def get_filtered_peaks(num_of_peaks, xs, ys, median_window = None, median_factor = 10.):
+def get_filtered_peaks(num_of_peaks, xs, ys, median_window = None, median_factor = 20.): #median_factor is magic
     """
     ## Inputs:
     `num_of_peaks`: number of peaks to return  
@@ -313,7 +315,7 @@ def get_filtered_peaks(num_of_peaks, xs, ys, median_window = None, median_factor
     indices = indxs[np.argsort(-ys[indxs])]
 
     if median_window is not None:
-        y_medians = median_filter(ys, size=median_window)
+        y_medians = median_filter(ys, size=median_window) #median window def magic
         too_short = ys[indices] < median_factor * y_medians[indices]
         indices = np.delete(indices, too_short)
     
@@ -348,7 +350,7 @@ def folding_freq(delta_f, fs, ps, sampling_time, makeplots=False):
     fc_guess = 1. / sampling_time
     IA = fs < 0.5 * fc_guess
     fsA, psA = fs[IA], ps[IA]
-    fsA, psA = fsA[2:-2], psA[2:-2]
+    fsA, psA = fsA[2:-2], psA[2:-2] #magic???
 
     cs = CubicSpline(fs, ps, extrapolate=False)
 
@@ -499,7 +501,7 @@ def region_and_freq(indices, folding_freq, f_min, unrefined_freq, unrefined_powe
     A, B, C = fas, folding_freq - fas, folding_freq + fas
 
     for i, loc in enumerate(valid_locs):
-        fine_freqsA = np.arange(A[i] - 5 * f_min, A[i] + 5 * f_min, 0.2 * f_min)
+        fine_freqsA = np.arange(A[i] - 5 * f_min, A[i] + 5 * f_min, 0.2 * f_min) #magic, and so are all fine_freqs
         #chi2_fineA = np.array([integral_chi_squared(2 * np.pi * f, t_fit, flux_fit, weight_fit, T) for f in fine_freqsA])
         #print("chi2_fineA", chi2_fineA)
         chi2_fineA = np.array([integral_chi_squared(2 * np.pi * f, t_fit, flux_fit, weight_fit, T) for f in fine_freqsA])
@@ -538,6 +540,7 @@ def region_and_freq(indices, folding_freq, f_min, unrefined_freq, unrefined_powe
     output_table['frequency'] = best_freqs
     output_table['region'] = regions
     output_table['delta chi-squared'] = delta_chi2s
+    output_table['frequency in region A'] = fas
 
     return output_table
     #return regions, best_freqs, best_chi2s
@@ -759,9 +762,7 @@ def sampling_stats(alls, halves, quartiles, eighths, ts, output_table):
     #make astropy table
     #print(sigma_phij.shape)
     output_table.add_columns([sigma_phij,  sigma_phi4, phase_change2, phase_change4], names = ['phase uncertainty jackknife', 'phase uncertainty split', 'phase change for A-B split', 'phase change for quartile split'])
-    print("output table adding columns", output_table)
-
-    #return amp_change2, phase_change2, amp_change4, phase_change4, sigma_lnA4, sigma_phi4, sigma_phij
+    #print("output table adding columns", output_table)
     return output_table
 
 def inject_one_mode(ts, ys, T, in_pars):
@@ -796,11 +797,12 @@ def RunningMedian(x, N):
 
 def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, inject_amp = 0.01, 
                        max_peaks = 24, chi2_threshold = 100, phase_uncertainty_threshold = 0.1, 
-                       median_window = 21, median_factor = 20.):
+                       median_window = 21, median_factor = 20.): #basically all magic here
     
     start = time.time()
     #output_dir = os.path.join("testing", f"{kicID}")
     #os.makedirs(output_dir, exist_ok=True)
+    print(f"working on {kicID}")
 
     
     #get the lightcurve
@@ -828,75 +830,15 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
         print("injection", inject_pars)
         flux_fit = inject_one_mode(t_fit, flux_fit, exptime, inject_pars)
         lc = LightCurve(time=t_fit, flux=flux_fit) #setting new lc to match yin
-    #lc plotting
-    if plots:
-        if inject:
-
-            plt.plot(lc.time.value, lc.flux.value, color = "k", label = "Injected Lightcurve")
-            plt.xlabel("Time")
-            plt.ylabel("Flux")
-            plt.title(f"Injected Lightcurve of {kicID}")
-            if save:
-                #plt.savefig(os.path.join(output_dir, f"{kicID}_injected_lightcurve.png"))
-                plt.savefig(f"{kicID}_injected_lightcurve.png")
-            plt.show()
-
-        else:
-            plt.plot(lc.time.value, lc.flux.value, color = "k", label = "Lightcurve")
-            plt.xlabel("Time")
-            plt.ylabel("Flux")
-            plt.title(f"Lightcurve of {kicID}")
-            if save:
-                #plt.savefig(os.path.join(output_dir, f"{kicID}_lightcurve.png"))
-                plt.savefig(f"{kicID}_lightcurve.png")
-            plt.show()
-
+    
     #get periodograms in regions A, B, and C
     freq_full, power_full = get_periodogram(f_min, f_maxC, df, lc)
     fc = folding_freq(delta_f, freq_full, power_full, sampling_time, False)
     fb = 0.5 * fc
     freq_mini, power_mini = get_periodogram(f_min, fb, df, lc)
 
-    RunningMedian_power = RunningMedian(power_mini, 31)
+    RunningMedian_power = RunningMedian(power_mini, 31) #31 is magic
 
-    
-    #mini periodogram plotting
-    if plots:
-        plt.plot(freq_mini, power_mini, 'k')
-        plt.plot(freq_mini, RunningMedian_power, 'r-', label='Running Median')
-        #plt.axvline(0.5, color = 'red')
-        plt.xlabel("Frequency (1/day)")
-        plt.ylabel("Power")
-        if inject:
-            plt.title(f"Mini Injected Periodogram of {kicID}")
-            if save:
-                #plt.savefig(os.path.join(output_dir, f"{kicID}_injected_miniperio.png"))
-                plt.savefig(f"{kicID}_injected_miniperio.png")
-            plt.show()
-        else:
-            plt.title(f"Mini Periodogram of {kicID}")
-            if save:
-                #plt.savefig(os.path.join(output_dir, f"{kicID}_miniperio.png"))
-                plt.savefig( f"{kicID}_miniperio.png")
-            plt.show()
-        #log mini periodogram
-        plt.plot(freq_mini, power_mini, 'k.')
-        plt.plot(freq_mini, RunningMedian_power, 'r-', label='Running Median')
-        plt.xlabel("Frequency (1/day)")
-        plt.ylabel("Log Power")
-        #plt.axvline(0.5, color = 'red')
-        plt.semilogy()
-        if inject:
-            plt.title(f"Log Mini Injected Periodogram of {kicID}")
-            if save:
-                plt.savefig(f"{kicID}_injected_logminiperio.png")
-            plt.show()
-        else:
-            plt.title(f"Log Mini Periodogram of {kicID}")
-            if save:
-                #plt.savefig(os.path.join(output_dir, f"{kicID}_logminiperio.png"))
-                plt.savefig(f"{kicID}_logminiperio.png")
-            plt.show()
         
 
     #find periodogram peaks in region A
@@ -906,28 +848,40 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
         print(f"No peaks found in {kicID}")
         return None
     
-    #refine periodogram peaks in region A
-    refined_freq, refined_power, second_derivatives = refine_peaks(freq_mini, power_mini, indices)
     
     #find frequencies and corresponding regions
     #regions, final_freqs, chi2s = region_and_freq(indices, fc, df, freq_mini, power_mini, t_fit, flux_fit, weight_fit, exptime) #make the output table
     output_table = region_and_freq(indices, fc, df, freq_mini, power_mini, t_fit, flux_fit, weight_fit, exptime)
 
-    print("first output table", output_table)
+    #print("first output table", output_table)
     #print(f"delta_chi2s for {kicID}:", output_table["delta chi-squared"])
-
 
     good = ~np.isnan(output_table["frequency"]) & (output_table["delta chi-squared"] >= chi2_threshold) #filter out bad regions and low chi2
     if np.sum(good) < 1:
         print(f"No frequencies found in {kicID} with chi2 threshold {chi2_threshold}")
         return None 
     output_table = output_table[good]
+    
+    #sharpnesses = sharpness(second_derivatives, refined_power)
+    all, half, quartiles, eighths = check_coherence(t_fit, flux_fit, weight_fit, exptime, output_table)
 
     
 
+    output_table = sampling_stats(all, half, quartiles, eighths, t_fit, output_table)
+    
+    
+    good = (output_table['phase uncertainty jackknife'] <  phase_uncertainty_threshold)
+    if np.sum(good) < 1:
+        print(f"No modes found in {kicID} with phase uncertainty threshold {phase_uncertainty_threshold}")
+        return None
+    #bug: sampling_stats() should return a table object and this would only be one assignment
+    output_table = output_table[good]
+
+    #print("final output table", output_table)
+
     #full periodogram plotting (requires final_freqs)
     if plots:
-        plt.plot(freq_full, power_full, 'k.')
+        plt.plot(freq_full, power_full, 'k.', markersize = 3)
         for freq in output_table["frequency"]:
             plt.axvline(freq, color='red', alpha=0.25, lw = 0.5)
         plt.xlabel("Frequency (1/day)")
@@ -935,6 +889,7 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
         plt.title("Frequencies that make chi2 cut")
         plt.axvline(fc)
         plt.axvline(fc/2)
+        plt.semilogy()
         if inject:
             plt.title(f"Full Injected Periodogram of {kicID}")
             if save:
@@ -946,38 +901,35 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
                 #plt.savefig(os.path.join(output_dir, f"{kicID}_fullperio.png"))
                 plt.savefig(f"{kicID}_fullperio.png")
             plt.show()   
+    
+    sigma_phi4 = output_table['phase uncertainty split']
+    sigma_phij = output_table['phase uncertainty jackknife']
+    final_freqs = output_table['frequency']
+    phase_change2 = output_table[ 'phase change for A-B split']
+    phase_change4 = output_table['phase change for quartile split']
+    regions = output_table['region']
+    delta_chi2s = output_table['delta chi-squared']
+    fas = output_table['frequency in region A']
+    
+    #sigmaphi plotting
+    if plots:
+        plt.scatter(sigma_phi4, sigma_phij, c = delta_chi2s, marker = 'o', s = 10, label = 'delta chi >= 100', cmap = "viridis")
+        plt.title(f"sigma phi for {kicID}")
+        plt.xlabel("sigma phis for quartiles")
+        plt.ylabel("sigma phis for jackknives")
+        plt.axvline(0.1, color = 'pink')
+        plt.axhline(0.1, color = 'pink')
+        plt.axvline(0.01, color = 'sandybrown')
+        plt.axhline(0.01, color = 'sandybrown')
+        plt.loglog()
+        plt.colorbar()
         
-    print("Magic numbers: f_min =", f_min, ", over_sampling =", over_sampling,  "jack knife threshold =", phase_uncertainty_threshold, ", chi2_threshold =", chi2_threshold)
-    
-    #sharpnesses = sharpness(second_derivatives, refined_power)
-    all, half, quartiles, eighths = check_coherence(t_fit, flux_fit, weight_fit, exptime, output_table)
-
-    
-
-    output_table = sampling_stats(all, half, quartiles, eighths, t_fit, output_table)
-    #here's how this code should work
-    #print("after sampling stats output table", output_table)
-    
-    
-    
-    good = (output_table['phase uncertainty jackknife'] <  phase_uncertainty_threshold)
-    if np.sum(good) < 1:
-        print(f"No modes found in {kicID} with phase uncertainty threshold {phase_uncertainty_threshold}")
-        return None
-    #bug: sampling_stats() should return a table object and this would only be one assignment
-    output_table = output_table[good]
-
-    print("final output table", output_table)
-
-    
+        if save:
+            plt.savefig(f"{kicID}_phase_uncertainity_plot.png")
+        plt.show()
 
     #15 point graph plotting
     if plots:
-        phase_change2 = output_table['phase change for A-B split']
-        phase_change4 = output_table['phase change for quartile split']
-        sigma_phi4 = output_table['phase uncertainty split']
-        sigma_phij = output_table['phase uncertainty jackknife']
-        final_freqs = output_table['frequency']
     
         fig, axes = plt.subplots(3, 4, figsize=(16, 9))
         plt.suptitle(f"15 Point figure of {kicID}", fontsize = 18)
@@ -1052,25 +1004,14 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
     print("Found modes length:", len(final_freqs))
     #print("Final frequencies:", final_freqs)
     #save to csv
+    output_table.remove_column('phase change for quartile split')
 
+    output_table.add_column( ([kicID, ] * len(final_freqs)), name = 'KIC', index = 0)
+    print(output_table)
 
     if save:
-        date_str = datetime.now().strftime("%Y-%m-%d") 
-        print("find_modes_in_star() saving results for", kicID)
-        print(len(final_freqs), len(regions), len(refined_freq), len(delta_chi2s), len(sigma_phi4), len(sigma_phij))
-        data = Table()
-        data['KIC'] = [kicID, ] * len(final_freqs)
-        data['frequency'] = (final_freqs)
-        data['region'] = (regions)
-        data['frequency in region A'] = (refined_freq)
-        #data['Sharp'] = safe_arr(sharpnesses)
-        data['delta chi-squared'] = (delta_chi2s)
-        #data['Change of phase(2)'] = safe_arr(rate_of_phase)
-        #data['Change of lnA(2)'] = safe_arr(rate_of_amp)
-        #data['Sigma lnA(4)'] = safe_arr(sigma_lnA)
-        data['phase uncertainty from splits'] = (sigma_phi4)
-        data['phase uncertainty'] = (sigma_phij)
 
+        print("find_modes_in_star() saving results for", kicID)
         
         if inject:
             ascii.write(
@@ -1092,23 +1033,61 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
             )
         else:
             ascii.write(
-            data,
-            kicID + '_stats' + '.csv',
+            output_table,
+            kicID + '_random_stats' + '.csv',
             overwrite=True,
             format="csv",
             formats={
-                "Freqs": "{:.7f}",
-                "Regions": "{}",
-                "Freq in region A": "{:.7f}",
-                #"Sharp": "{:.7e}",
-                "Delta chi2": "{:.7e}",
-                #"Change of phase(2)": "{:.7e}",
-                #"Change of lnA(2)": "{:.7e}",
-                #"Sigma lnA(4)": "{:.7e}",
-                "Sigma phi(4)": "{:.7e}",
-                "Sigma phi(jack)" : "{:.7e}", 
+                "frequency": "{:.7f}",
+                "region": "{}",
+                "delta chi-squared": "{:.7e}",
+                "frequency in region A": "{:.7f}",
+                "phase uncertainty jackknife" : "{:.7e}",
+                "phase uncertainty split": "{:.7e}",
+                "phase change for A-B split": "{:.7e}",
             }
             )
+            
+
+            #magic numbers
+
+            #for peak finding function
+                #f_avoid = 3.5 / 372.5
+                #def get_filtered_peaks(num_of_peaks, xs, ys, median_window = None, median_factor = 10.)
+                #median_factor = 
+                #median_window = 21
+            
+            
+            #sampling times characterizing
+            # if sampling_time > 0.9 * lc_exptime:
+            #     exptime = lc_exptime
+            # if sampling_time < 1.1 * sc_exptime:
+            #     exptime = sc_exptime
+
+            #finding folding frequency, the refined frequency and its region function
+            # small, tiny = 20 * delta_f, 0.25 * delta_f #magic
+            # fc_candidates = np.arange(fc_guess - small, fc_guess + small, tiny), these are folding freuqnecy candidates
+            #fine_freqsA = np.arange(A[i] - 5 * f_min, A[i] + 5 * f_min, 0.2 * f_min), the are the chi square min frequency candidates
+            
+
+            #running median
+            #RunningMedian_power = RunningMedian(power_mini, 31)
+
+            #thresholds to determine frequency
+            find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, inject_amp = 0.01, 
+                       max_peaks = 24, chi2_threshold = 100, phase_uncertainty_threshold = 0.1, 
+                       median_window = 21, median_factor = 20.): #basically all magic here
+            
+            #chi2_threshold = 100
+            #phase_uncertainty_threshold = 0.1
+
+            
+
+
+            
+
+    
+
     
     print(f"find_modes_in_star() took {time.time() - start} seconds for star {kicID}")
         
