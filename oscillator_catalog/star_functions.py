@@ -31,7 +31,6 @@ from lightkurve import LightCurve
 from lightkurve import LightkurveError
 import time
 from scipy.ndimage import median_filter
-import cProfile
 
 f_avoid = 3.5 / 372.5 #magic number
 lc_exptime = (29.4) / (60 * 24) #days, see Kepler Data Processing Handbook, Section 3.1
@@ -802,7 +801,6 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
     start = time.time()
     #output_dir = os.path.join("testing", f"{kicID}")
     #os.makedirs(output_dir, exist_ok=True)
-    print(f"working on {kicID}")
 
     
     #get the lightcurve
@@ -876,14 +874,15 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
         return None
     #bug: sampling_stats() should return a table object and this would only be one assignment
     output_table = output_table[good]
+    
 
     #print("final output table", output_table)
 
     #full periodogram plotting (requires final_freqs)
     if plots:
-        plt.plot(freq_full, power_full, 'k.', markersize = 3)
+        plt.plot(freq_full, power_full, 'k.', markersize = 1, alpha = 0.5)
         for freq in output_table["frequency"]:
-            plt.axvline(freq, color='red', alpha=0.25, lw = 0.5)
+            plt.axvline(freq, color='red', alpha=0.50, lw = 0.5)
         plt.xlabel("Frequency (1/day)")
         plt.ylabel("Power")
         plt.title("Frequencies that make chi2 cut")
@@ -900,7 +899,7 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
             if save:
                 #plt.savefig(os.path.join(output_dir, f"{kicID}_fullperio.png"))
                 plt.savefig(f"{kicID}_fullperio.png")
-            plt.show()   
+            #plt.show()   
     
     sigma_phi4 = output_table['phase uncertainty split']
     sigma_phij = output_table['phase uncertainty jackknife']
@@ -926,7 +925,7 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
         
         if save:
             plt.savefig(f"{kicID}_phase_uncertainity_plot.png")
-        plt.show()
+        #plt.show()
 
     #15 point graph plotting
     if plots:
@@ -997,14 +996,17 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
             if save:
                 #plt.savefig(os.path.join(output_dir, f"{kicID}_15point.png"))
                 plt.savefig(f"{kicID}_15point.png")
-            plt.show()
+            #plt.show()
         plt.close(fig)
         
     print("find_modes_in_star() finished processing star", kicID)
     print("Found modes length:", len(final_freqs))
+    
     #print("Final frequencies:", final_freqs)
     #save to csv
     output_table.remove_column('phase change for quartile split')
+    output_table.remove_column('phase change for A-B split')
+
 
     output_table.add_column( ([kicID, ] * len(final_freqs)), name = 'KIC', index = 0)
     print(output_table)
@@ -1044,7 +1046,6 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
                 "frequency in region A": "{:.7f}",
                 "phase uncertainty jackknife" : "{:.7e}",
                 "phase uncertainty split": "{:.7e}",
-                "phase change for A-B split": "{:.7e}",
             }
             )
             
@@ -1058,7 +1059,7 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
                 #median_window = 21
             
             
-            #sampling times characterizing
+            #sampling times characterizing (not magic number)
             # if sampling_time > 0.9 * lc_exptime:
             #     exptime = lc_exptime
             # if sampling_time < 1.1 * sc_exptime:
@@ -1073,13 +1074,17 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
             #running median
             #RunningMedian_power = RunningMedian(power_mini, 31)
 
-            #thresholds to determine frequency
-            find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, inject_amp = 0.01, 
-                       max_peaks = 24, chi2_threshold = 100, phase_uncertainty_threshold = 0.1, 
-                       median_window = 21, median_factor = 20.): #basically all magic here
-            
+
+            #thresholds to determine if qualified frequency
             #chi2_threshold = 100
             #phase_uncertainty_threshold = 0.1
+
+            #maxpeaks = 100
+    
+    if final_freqs is not None and len(final_freqs) > 0:
+        return True
+    else:
+        return False
 
             
 
@@ -1090,7 +1095,80 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
 
     
     print(f"find_modes_in_star() took {time.time() - start} seconds for star {kicID}")
-        
+
+import argparse
+import mysql.connector
+def track_status(star_id, dataset_id, status, process_id=None):
+    conn = mysql.connector.connect(
+        host='localhost',
+        user='root',
+        password='Turkeyfreebirds33$',
+        database='stars_db'
+    )
+    cursor = conn.cursor()
+    if status == 'started':
+        cursor.execute(
+            """
+            INSERT INTO task (star_id, dataset_id, started)
+            VALUES (%s, %s, NOW())
+            ON DUPLICATE KEY UPDATE started=NOW()
+            """,
+            (star_id, dataset_id)
+        )
+        print(f"Started task for star_id={star_id}, dataset_id={dataset_id}")
+
+    elif status == 'finished':
+        cursor.execute(
+            "UPDATE task SET finished=NOW() WHERE star_id=%s AND dataset_id=%s",
+            (star_id, dataset_id)
+        )
+        print(f"Finished task for star_id={star_id}, dataset_id={dataset_id}")
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def record_star(star_id, dataset_id):
+    conn = mysql.connector.connect(
+        host='localhost',
+        user='root',
+        password='Turkeyfreebirds33$',
+        database='stars_db'
+    )
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO star (star_id, dataset_id) VALUES (%s, %s) "
+        "ON DUPLICATE KEY UPDATE dataset_id=%s",
+        (star_id, dataset_id, dataset_id)
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+ 
+# def record_mode(star_id, dataset_id, frequency):
+
+def main():
+    parser = argparse.ArgumentParser(description="Process a star.")
+    parser.add_argument("star_id", type=str)
+    parser.add_argument("--dataset_id", type=str, default="Kepler_LC")
+    args = parser.parse_args()
+
+    star_id = args.star_id
+    dataset_id = args.dataset_id
+
+    track_status(star_id, dataset_id, 'started')
+
+    success = find_modes_in_star(star_id, plots=False, save=False, max_peaks=100)
+
+    if success:  
+        record_star(star_id, dataset_id)
+        #record_mode(star_id, dataset_id)
+
+    track_status(star_id, dataset_id, 'finished')
+
+
+if __name__ == "__main__":
+    main()
 
 
 
