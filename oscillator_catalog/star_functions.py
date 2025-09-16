@@ -14,6 +14,7 @@ Functions for finding coherent modes in Kepler light curves.
 ## bugs and issues and to-do items:
 - KICid should probably be a string not an int.
 - functions should take in a table of frequencies and return augmented table.
+- db username (not nana), needs to be user setable
 """
 
 from scipy.signal import find_peaks
@@ -1101,8 +1102,7 @@ import mysql.connector
 def track_status(star_id, dataset_id, status, process_id=None):
     conn = mysql.connector.connect(
         host='localhost',
-        user='root',
-        password='Turkeyfreebirds33$',
+        user='nana',
         database='stars_db'
     )
     cursor = conn.cursor()
@@ -1130,8 +1130,7 @@ def track_status(star_id, dataset_id, status, process_id=None):
 def record_star(star_id, dataset_id):
     conn = mysql.connector.connect(
         host='localhost',
-        user='root',
-        password='Turkeyfreebirds33$',
+        user='nana',
         database='stars_db'
     )
     cursor = conn.cursor()
@@ -1146,6 +1145,95 @@ def record_star(star_id, dataset_id):
 
  
 # def record_mode(star_id, dataset_id, frequency):
+
+'''database setup commands'''
+def setup_db():
+    """ WARNING: 
+    before you run this command you have to have created the db with the sql file called `mysql_schema.sql`
+    """
+    load_star_table()
+    load_dataset_table()
+    load_task_table()
+
+def get_db_connection():
+    return mysql.connector.connect(
+        host='localhost',
+        user='nana',
+        database='stars_db')
+
+def execute_query_and_close(query):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(query)
+    conn.commit()
+    cursor.close()
+    conn.close()
+    
+def load_star_table():
+    filename = "KICids.csv"
+    foo = Table.read(filename, format = "ascii.csv")
+    kic_ids = [f"KIC{f:09d}" for f in foo['ID']]
+    query = "DELETE FROM star; INSERT INTO star (star_id) VALUES ('" + "'),('".join(kic_ids) + "');"
+    execute_query_and_close(query)
+
+def load_dataset_table():
+    query = """DELETE FROM dataset; 
+    INSERT INTO dataset (dataset_id, description) 
+    VALUES ('Kepler_long', 'Long-cadence data from the NASA Kepler Mission');"""
+    execute_query_and_close(query)
+    query = """INSERT INTO dataset (dataset_id, description) 
+    VALUES ('Kepler_short', 'short-cadence data from the NASA Kepler Mission');"""
+    execute_query_and_close(query)
+
+#add print that tells count of the table for each function
+def load_task_table():
+    query = """DELETE FROM task; 
+    INSERT into task(star_id, dataset_id) 
+    SELECT star.star_id, dataset.dataset_id FROM star CROSS JOIN dataset;"""
+    execute_query_and_close(query)
+
+
+def start_one_task():
+    #run two queries
+    #ask for unstarted task, mark the task as started
+   
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    query1 = "SELECT star_id, dataset_id FROM task WHERE started IS NULL LIMIT 1;"
+    cursor.execute(query1)
+    star_id, dataset_id = cursor.fetchall()[0]
+       
+    query2 = f"""UPDATE task SET 
+    started = "{Time(Time.now(), format = "isot")}", 
+    process_id = {os.getpid()} WHERE star_id = "{star_id}" AND dataset_id = "{dataset_id}";"""
+    cursor.execute(query2)
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return star_id, dataset_id
+
+def output_one_mode(stuff):
+
+#within do one task (within here do try and except in the future)
+    #start_one_task
+    #do mode stuff (all the pipeline stuff)
+    #if modes found output modes (the function above)
+    #end one task
+
+#then do one task ten times aka testing
+
+def end_one_task(star_id, dataset_id):
+    
+    query = f"""UPDATE task SET 
+    finished = "{Time(Time.now(), format = "isot")}" 
+    WHERE star_id = "{star_id}" AND dataset_id = "{dataset_id}";"""
+    execute_query_and_close(query)
+
+#run one star in the main function instead, going to grab the star_id from the start one task, integrate db functions into main
+#output mode table
+
+
+
 
 def main():
     parser = argparse.ArgumentParser(description="Process a star.")
@@ -1169,6 +1257,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
 
 
 
