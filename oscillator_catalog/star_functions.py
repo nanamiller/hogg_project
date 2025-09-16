@@ -38,7 +38,7 @@ lc_exptime = (29.4) / (60 * 24) #days, see Kepler Data Processing Handbook, Sect
 sc_exptime = (58.8) / (60 * 60 * 24) #days, see Kepler Data Processing Handbook, Section 3.1
 
 def get_kepler_data(kic_id, exptime='long'):
-
+    
     start = time.time()
     """
     ## Inputs:
@@ -58,8 +58,9 @@ def get_kepler_data(kic_id, exptime='long'):
     - Rejects light curves where any `dt < 0.9 * median(dt)` — may be too strict
     - Uses magic thresholds for time sampling
     """
+    print("starting to download data for", kic_id)
+
     search_result = lk.search_lightcurve(kic_id, mission = 'Kepler', exptime=exptime)
-    
     if len(search_result) < 1:
         print(f"get_kepler_data(): no results for {kic_id} at this cadence")
         return np.nan, np.nan, np.nan, np.nan
@@ -70,7 +71,6 @@ def get_kepler_data(kic_id, exptime='long'):
     except LightkurveError:
         print(f"LightkurveError for {kic_id}: get_kepler_data(): search_result.download_all() failed for {kic_id}")
         return np.nan, np.nan, np.nan, np.nan
-    
     lc = lc_collection.stitch()
     if check_inputs(lc.time.value) is False:
         time_val, __ = reorder_inputs(lc.time.value, lc.flux.value)
@@ -805,7 +805,7 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
 
     
     #get the lightcurve
-    kicID = "KIC" + str(kicID).lstrip("0") 
+    print(f"kic id {kicID}")
     lc, delta_f, sampling_time, exptime = get_kepler_data(kicID)
 
     if np.isnan(delta_f):
@@ -1083,9 +1083,9 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
             #maxpeaks = 100
     
     if final_freqs is not None and len(final_freqs) > 0:
-        return True
+        return output_table
     else:
-        return False
+        return None
 
             
 
@@ -1099,52 +1099,10 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
 
 import argparse
 import mysql.connector
-def track_status(star_id, dataset_id, status, process_id=None):
-    conn = mysql.connector.connect(
-        host='localhost',
-        user='nana',
-        database='stars_db'
-    )
-    cursor = conn.cursor()
-    if status == 'started':
-        cursor.execute(
-            """
-            INSERT INTO task (star_id, dataset_id, started)
-            VALUES (%s, %s, NOW())
-            ON DUPLICATE KEY UPDATE started=NOW()
-            """,
-            (star_id, dataset_id)
-        )
-        print(f"Started task for star_id={star_id}, dataset_id={dataset_id}")
+from astropy.time import Time
+import os
+import sys
 
-    elif status == 'finished':
-        cursor.execute(
-            "UPDATE task SET finished=NOW() WHERE star_id=%s AND dataset_id=%s",
-            (star_id, dataset_id)
-        )
-        print(f"Finished task for star_id={star_id}, dataset_id={dataset_id}")
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-def record_star(star_id, dataset_id):
-    conn = mysql.connector.connect(
-        host='localhost',
-        user='nana',
-        database='stars_db'
-    )
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO star (star_id, dataset_id) VALUES (%s, %s) "
-        "ON DUPLICATE KEY UPDATE dataset_id=%s",
-        (star_id, dataset_id, dataset_id)
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
-
- 
-# def record_mode(star_id, dataset_id, frequency):
 
 '''database setup commands'''
 def setup_db():
@@ -1181,17 +1139,31 @@ def load_dataset_table():
     INSERT INTO dataset (dataset_id, description) 
     VALUES ('Kepler_long', 'Long-cadence data from the NASA Kepler Mission');"""
     execute_query_and_close(query)
-    query = """INSERT INTO dataset (dataset_id, description) 
-    VALUES ('Kepler_short', 'short-cadence data from the NASA Kepler Mission');"""
-    execute_query_and_close(query)
+    # query = """INSERT INTO dataset (dataset_id, description) 
+    # VALUES ('Kepler_short', 'short-cadence data from the NASA Kepler Mission');"""
+    # execute_query_and_close(query)
 
-#add print that tells count of the table for each function
 def load_task_table():
     query = """DELETE FROM task; 
     INSERT into task(star_id, dataset_id) 
     SELECT star.star_id, dataset.dataset_id FROM star CROSS JOIN dataset;"""
     execute_query_and_close(query)
 
+    count_query = "SELECT COUNT(*) FROM task;"
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(count_query)
+    count = cursor.fetchone()[0]
+    cursor.close()
+    conn.close()
+    print(f"Task table loaded with {count} entries.")
+
+def update_message(star_id, dataset_id, message):
+    query = f"""UPDATE task  
+    SET message = "{message}" 
+    WHERE star_id = "{star_id}" AND dataset_id = "{dataset_id}";"""
+    print(query)
+    execute_query_and_close(query)
 
 def start_one_task():
     #run two queries
@@ -1201,7 +1173,13 @@ def start_one_task():
     cursor = conn.cursor()
     query1 = "SELECT star_id, dataset_id FROM task WHERE started IS NULL LIMIT 1;"
     cursor.execute(query1)
-    star_id, dataset_id = cursor.fetchall()[0]
+    foo = cursor.fetchall()
+    if len(foo) == 0:
+        print("No unstarted tasks available.")
+        cursor.close()
+        conn.close()
+        sys.exit(0)
+    star_id, dataset_id = foo[0]
        
     query2 = f"""UPDATE task SET 
     started = "{Time(Time.now(), format = "isot")}", 
@@ -1212,7 +1190,27 @@ def start_one_task():
     conn.close()
     return star_id, dataset_id
 
-def output_one_mode(stuff):
+def output_modes_to_db(star_id, dataset_id, output_table):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    for row in output_table:
+        frequency = row['frequency']
+        region = row['region']
+        frequency_in_region_A = row['frequency in region A']
+        delta_chi2 = row['delta chi-squared']
+        phase_uncertainty_jackknife = row['phase uncertainty jackknife']
+        phase_uncertainty_split = row['phase uncertainty split']
+        query = f"""
+        INSERT INTO mode (star_id, dataset_id, frequency, region, frequency_in_region_A,
+                        delta_chi2, phase_uncertainty_jackknife, phase_uncertainty_split)
+        VALUES ('{star_id}', '{dataset_id}', {frequency}, '{region}', {frequency_in_region_A},
+                {delta_chi2}, {phase_uncertainty_jackknife}, {phase_uncertainty_split});
+        """
+        cursor.execute(query)
+
+    conn.commit()
+    cursor.close()
+    conn.close()
 
 #within do one task (within here do try and except in the future)
     #start_one_task
@@ -1233,30 +1231,44 @@ def end_one_task(star_id, dataset_id):
 #output mode table
 
 
+def run_one_task():
+    star_id, dataset_id = start_one_task()
+    dataset_id = "Kepler_long"  #keep it lc for now
+    print(f"start_one_task() selected star_id={star_id}, dataset_id={dataset_id}")
+    #star_id = "KIC5202905"
+    result_table = find_modes_in_star(star_id)
 
+    if result_table is None:
+        message = f"No valid modes found for {star_id}"
+        print(message)
+        update_message(star_id, dataset_id, message)
+    else:
+        message = f"Found {len(result_table)} modes for KIC{star_id}"
+        print(message)
+        update_message(star_id, dataset_id, message)
+        output_modes_to_db(star_id, dataset_id, result_table)
+
+    end_one_task(star_id, dataset_id)
+
+#running sql file
+#mysql -u nana -p stars_db < mysql_schema.sql
 
 def main():
-    parser = argparse.ArgumentParser(description="Process a star.")
-    parser.add_argument("star_id", type=str)
-    parser.add_argument("--dataset_id", type=str, default="Kepler_LC")
-    args = parser.parse_args()
-
-    star_id = args.star_id
-    dataset_id = args.dataset_id
-
-    track_status(star_id, dataset_id, 'started')
-
-    success = find_modes_in_star(star_id, plots=False, save=False, max_peaks=100)
-
-    if success:  
-        record_star(star_id, dataset_id)
-        #record_mode(star_id, dataset_id)
-
-    track_status(star_id, dataset_id, 'finished')
-
+    """ this is wrong"""
+    if len(sys.argv) > 1 and sys.argv[1] == "reset_db":
+        setup_db()
+        print("Database setup complete.")
+        return
+    
+    run_one_task()
 
 if __name__ == "__main__":
     main()
+
+
+
+
+    
 
 
 
