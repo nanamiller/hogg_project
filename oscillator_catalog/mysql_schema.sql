@@ -1,8 +1,11 @@
-CREATE USER 'nana'@'localhost';
-GRANT ALL PRIVILEGES ON stars_db.* TO 'nana'@'localhost';
+-- DROP USER 'nana'@'localhost';
+-- FLUSH PRIVILEGES;
+-- CREATE USER 'nana'@'%';
 
 CREATE DATABASE IF NOT EXISTS stars_db;
 USE stars_db;
+GRANT ALL ON stars_db.* TO 'nana'@'%';
+
 
 DROP TABLE IF EXISTS dataset;
 CREATE TABLE IF NOT EXISTS dataset (
@@ -24,15 +27,17 @@ CREATE TABLE IF NOT EXISTS task (
     process_id VARCHAR(32) NULL,
     started TIMESTAMP NULL,
     finished TIMESTAMP NULL,
+    message VARCHAR(256) NULL,
     PRIMARY KEY (star_id, dataset_id)
 );
 
 DROP TABLE IF EXISTS mode;
 CREATE TABLE mode (
-    mode_id INTEGER PRIMARY KEY,
-    star_id VARCHAR(50) NOT NULL,
-    dataset_id VARCHAR(50) NOT NULL,
-    region VARCHAR(50),
+    mode_id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    frequency DOUBLE NOT NULL,
+    star_id VARCHAR(32) NOT NULL,
+    dataset_id VARCHAR(32) NOT NULL,
+    region VARCHAR(1),
     delta_chi_squared DOUBLE,
     frequency_region_A DOUBLE,
     phase_uncertainty_jackknife DOUBLE,

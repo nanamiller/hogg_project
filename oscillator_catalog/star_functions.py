@@ -1146,7 +1146,7 @@ def load_dataset_table():
 def load_task_table():
     query = """DELETE FROM task; 
     INSERT into task(star_id, dataset_id) 
-    SELECT star.star_id, dataset.dataset_id FROM star CROSS JOIN dataset;"""
+    SELECT star.star_id, dataset.dataset_id FROM star CROSS JOIN dataset LIMIT 10;"""
     execute_query_and_close(query)
 
     count_query = "SELECT COUNT(*) FROM task;"
@@ -1168,7 +1168,7 @@ def update_message(star_id, dataset_id, message):
 def start_one_task():
     #run two queries
     #ask for unstarted task, mark the task as started
-   
+    print("here in start one task")
     conn = get_db_connection()
     cursor = conn.cursor()
     query1 = "SELECT star_id, dataset_id FROM task WHERE started IS NULL LIMIT 1;"
@@ -1196,15 +1196,15 @@ def output_modes_to_db(star_id, dataset_id, output_table):
     for row in output_table:
         frequency = row['frequency']
         region = row['region']
-        frequency_in_region_A = row['frequency in region A']
-        delta_chi2 = row['delta chi-squared']
+        frequency_region_A = row['frequency in region A']
+        delta_chi_squared = row['delta chi-squared']
         phase_uncertainty_jackknife = row['phase uncertainty jackknife']
         phase_uncertainty_split = row['phase uncertainty split']
         query = f"""
-        INSERT INTO mode (star_id, dataset_id, frequency, region, frequency_in_region_A,
-                        delta_chi2, phase_uncertainty_jackknife, phase_uncertainty_split)
-        VALUES ('{star_id}', '{dataset_id}', {frequency}, '{region}', {frequency_in_region_A},
-                {delta_chi2}, {phase_uncertainty_jackknife}, {phase_uncertainty_split});
+        INSERT INTO mode (star_id, dataset_id, frequency, region, frequency_region_A,
+                        delta_chi_squared, phase_uncertainty_jackknife, phase_uncertainty_split)
+        VALUES ('{star_id}', '{dataset_id}', {frequency}, '{region}', {frequency_region_A},
+                {delta_chi_squared}, {phase_uncertainty_jackknife}, {phase_uncertainty_split});
         """
         cursor.execute(query)
 
@@ -1235,7 +1235,6 @@ def run_one_task():
     star_id, dataset_id = start_one_task()
     dataset_id = "Kepler_long"  #keep it lc for now
     print(f"start_one_task() selected star_id={star_id}, dataset_id={dataset_id}")
-    #star_id = "KIC5202905"
     result_table = find_modes_in_star(star_id)
 
     if result_table is None:
@@ -1243,7 +1242,7 @@ def run_one_task():
         print(message)
         update_message(star_id, dataset_id, message)
     else:
-        message = f"Found {len(result_table)} modes for KIC{star_id}"
+        message = f"Found {len(result_table)} modes for {star_id}"
         print(message)
         update_message(star_id, dataset_id, message)
         output_modes_to_db(star_id, dataset_id, result_table)
@@ -1255,12 +1254,13 @@ def run_one_task():
 
 def main():
     """ this is wrong"""
-    if len(sys.argv) > 1 and sys.argv[1] == "reset_db":
+    if len(sys.argv) > 1 and sys.argv[1] == "db":
         setup_db()
         print("Database setup complete.")
         return
     
-    run_one_task()
+    while(True):
+       run_one_task()
 
 if __name__ == "__main__":
     main()
