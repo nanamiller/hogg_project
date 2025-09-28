@@ -2,9 +2,9 @@
 -- FLUSH PRIVILEGES;
 -- CREATE USER 'nana'@'%';
 
-CREATE DATABASE IF NOT EXISTS stars_db;
-USE stars_db;
-GRANT ALL ON stars_db.* TO 'nana'@'%';
+-- CREATE DATABASE IF NOT EXISTS stars_db;
+-- USE stars_db;
+-- GRANT ALL ON stars_db.* TO 'nana'@'%';
 
 
 DROP TABLE IF EXISTS dataset;
@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS task (
 
 DROP TABLE IF EXISTS mode;
 CREATE TABLE mode (
-    mode_id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    -- mode_id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, 
+    mode_id INTEGER PRIMARY KEY AUTOINCREMENT,
     frequency DOUBLE NOT NULL,
     star_id VARCHAR(32) NOT NULL,
     dataset_id VARCHAR(32) NOT NULL,

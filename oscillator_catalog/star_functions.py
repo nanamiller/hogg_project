@@ -1098,10 +1098,13 @@ def find_modes_in_star(kicID, plots = False, save = False, inject_rng = None, in
     print(f"find_modes_in_star() took {time.time() - start} seconds for star {kicID}")
 
 import argparse
-import mysql.connector
+#import mysql as db
+import sqlite3 as db
 from astropy.time import Time
 import os
 import sys
+import time
+import datetime
 
 
 '''database setup commands'''
@@ -1113,11 +1116,16 @@ def setup_db():
     load_dataset_table()
     load_task_table()
 
+#stuff here might change
+#write a setup sql database code, runs the sql file into sql lite
+#we're goign to call this database stars.db (sqlite)
+
 def get_db_connection():
-    return mysql.connector.connect(
-        host='localhost',
-        user='nana',
-        database='stars_db')
+    # return db.connector.connect(
+    #     host='localhost',
+    #     user='nana',
+    #     database='stars_db') this is mysql stuff here
+    return db.connect('stars_hpc.db')
 
 def execute_query_and_close(query):
     conn = get_db_connection()
@@ -1131,12 +1139,15 @@ def load_star_table():
     filename = "KICids.csv"
     foo = Table.read(filename, format = "ascii.csv")
     kic_ids = [f"KIC{f:09d}" for f in foo['ID']]
-    query = "DELETE FROM star; INSERT INTO star (star_id) VALUES ('" + "'),('".join(kic_ids) + "');"
+    query = "DELETE FROM star;"
+    execute_query_and_close(query)
+    query = "INSERT INTO star (star_id) VALUES ('" + "'),('".join(kic_ids) + "');"
     execute_query_and_close(query)
 
 def load_dataset_table():
-    query = """DELETE FROM dataset; 
-    INSERT INTO dataset (dataset_id, description) 
+    query = "DELETE FROM dataset"
+    execute_query_and_close(query)
+    query = """INSERT INTO dataset (dataset_id, description) 
     VALUES ('Kepler_long', 'Long-cadence data from the NASA Kepler Mission');"""
     execute_query_and_close(query)
     # query = """INSERT INTO dataset (dataset_id, description) 
@@ -1144,11 +1155,11 @@ def load_dataset_table():
     # execute_query_and_close(query)
 
 def load_task_table():
-    query = """DELETE FROM task; 
-    INSERT into task(star_id, dataset_id) 
+    query = "DELETE FROM task;"
+    execute_query_and_close(query)
+    query = """INSERT into task(star_id, dataset_id) 
     SELECT star.star_id, dataset.dataset_id FROM star CROSS JOIN dataset LIMIT 10;"""
     execute_query_and_close(query)
-
     count_query = "SELECT COUNT(*) FROM task;"
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1157,6 +1168,13 @@ def load_task_table():
     cursor.close()
     conn.close()
     print(f"Task table loaded with {count} entries.")
+
+# def load_mode_table():
+#     query = """DELETE FROM mode;
+#     INSERT INTO mode (star_id, dataset_id, frequency, region, frequency_region_A,
+#                       delta_chi_squared, phase_uncertainty_jackknife, phase_uncertainty_split"""
+#     execute_query_and_close(query)
+
 
 def update_message(star_id, dataset_id, message):
     query = f"""UPDATE task  
@@ -1168,7 +1186,6 @@ def update_message(star_id, dataset_id, message):
 def start_one_task():
     #run two queries
     #ask for unstarted task, mark the task as started
-    print("here in start one task")
     conn = get_db_connection()
     cursor = conn.cursor()
     query1 = "SELECT star_id, dataset_id FROM task WHERE started IS NULL LIMIT 1;"
@@ -1227,8 +1244,46 @@ def end_one_task(star_id, dataset_id):
     WHERE star_id = "{star_id}" AND dataset_id = "{dataset_id}";"""
     execute_query_and_close(query)
 
-#run one star in the main function instead, going to grab the star_id from the start one task, integrate db functions into main
-#output mode table
+def create_schema():
+    schema_path = "mysql_schema.sql"  # must be in the same folder as this script
+    with open(schema_path) as f:
+        schema_sql = f.read()
+
+    conn = get_db_connection()
+    conn.executescript(schema_sql)
+    conn.commit()
+    conn.close()
+    print("Database schema created successfully.")
+
+
+#code outline code 
+#def restart_dead_tasks():
+# if started > "now - 1day" and finished is null: use time as a string now - 1day"
+#and ended is null then set started and process_id to null
+
+def restart_dead_tasks():
+   
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT star_id, process_id, started
+        FROM task
+        WHERE finished IS NULL
+        AND started < datetime('now', '-1 day');
+    """)
+    #dead_tasks = cursor.fetchall()
+
+    cursor.execute("""
+        UPDATE task
+        SET started = NULL,
+        process_id = NULL
+        WHERE finished IS NULL
+        AND started < datetime('now', '-1 day');
+        """)
+
+    conn.commit()
+    conn.close()
+    
 
 
 def run_one_task():
@@ -1259,8 +1314,20 @@ def main():
         print("Database setup complete.")
         return
     
+    if len(sys.argv) > 1 and sys.argv[1] == "schema":
+        create_schema()
+        print("Database schema creation complete.")
+        return
+    
+    last_restart = datetime.datetime.now()
+
     while(True):
        run_one_task()
+
+       if (datetime.datetime.now() - last_restart).total_seconds() > 6 * 3600: #6 hours?
+            print("Restarting dead tasks...")
+            restart_dead_tasks()
+            last_restart = datetime.datetime.now()
 
 if __name__ == "__main__":
     main()
